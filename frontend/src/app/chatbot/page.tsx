@@ -44,12 +44,22 @@ export default function ChatbotPage() {
 
     websocket.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      setMessages(prev => [...prev, data])
-
-      // Check if appointment was created
-      if (data.appointment_created && data.appointment_id) {
+      
+      // Check for APPOINTMENT_BOOKED event
+      if (data.type === 'APPOINTMENT_BOOKED') {
+        // Add AI message to chat
+        setMessages(prev => [...prev, {
+          type: 'ai_message',
+          content: data.content,
+          timestamp: data.timestamp
+        }])
+        
+        // Set appointment created state
         setAppointmentCreated(true)
         setCreatedAppointmentId(data.appointment_id)
+      } else {
+        // Normal message
+        setMessages(prev => [...prev, data])
       }
     }
 
@@ -77,7 +87,7 @@ export default function ChatbotPage() {
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!inputValue.trim() || !ws) return
+    if (!inputValue.trim() || !ws || appointmentCreated) return
 
     const userMessage: AIMessage = {
       type: 'user_message',
@@ -160,17 +170,18 @@ export default function ChatbotPage() {
 
       {/* Appointment Created Banner */}
       {appointmentCreated && (
-        <div className="bg-green-100 border-l-4 border-green-500 p-4 m-4 rounded">
+        <div className="bg-green-100 border-l-4 border-green-500 p-4 m-4 rounded shadow-lg">
           <div className="flex items-center justify-between">
             <div>
-              <p className="font-semibold text-green-800">✅ Appointment Created!</p>
-              <p className="text-sm text-green-700">Your session has been scheduled</p>
+              <p className="font-semibold text-green-800 text-lg">✅ Appointment Successfully Created!</p>
+              <p className="text-sm text-green-700">Appointment ID: {createdAppointmentId?.substring(0, 8)}...</p>
+              <p className="text-sm text-green-700 mt-1">A therapist will be available for you soon</p>
             </div>
             <button
               onClick={handleEndChat}
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold"
+              className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold transition-colors shadow-md"
             >
-              End Chat & Go to Appointments
+              View My Appointments →
             </button>
           </div>
         </div>
@@ -205,21 +216,30 @@ export default function ChatbotPage() {
 
       {/* Input Area */}
       <div className="bg-white border-t border-gray-200 p-4">
-        <form onSubmit={handleSendMessage} className="flex space-x-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type your message..."
-            className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500"
-          />
-          <button
-            type="submit"
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors"
-          >
-            Send
-          </button>
-        </form>
+        {appointmentCreated ? (
+          <div className="text-center py-3 bg-green-50 rounded-lg">
+            <p className="text-green-800 font-semibold mb-2">✅ Appointment Successfully Created!</p>
+            <p className="text-sm text-green-600 mb-3">You can now close this chat and view your appointment.</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSendMessage} className="flex space-x-2">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Type your message..."
+              className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500"
+              disabled={appointmentCreated}
+            />
+            <button
+              type="submit"
+              disabled={appointmentCreated}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors disabled:bg-gray-400"
+            >
+              Send
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )

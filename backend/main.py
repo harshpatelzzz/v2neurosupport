@@ -230,17 +230,21 @@ class AIChat:
     
     def __init__(self):
         self.active_sessions: Dict[str, WebSocket] = {}
+        self.session_states: Dict[str, str] = {}  # Track state: IDLE or BOOKED
     
     async def connect(self, session_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_sessions[session_id] = websocket
+        self.session_states[session_id] = "IDLE"  # Initialize state
     
     def disconnect(self, session_id: str):
         if session_id in self.active_sessions:
             del self.active_sessions[session_id]
+        if session_id in self.session_states:
+            del self.session_states[session_id]
     
     def detect_appointment_request(self, message: str) -> bool:
-        """Detect if user wants to book an appointment"""
+        """Detect if user wants to book an appointment with explicit keywords"""
         keywords = [
             "book appointment",
             "schedule appointment",
@@ -248,7 +252,13 @@ class AIChat:
             "see a therapist",
             "talk to therapist",
             "book session",
-            "schedule session"
+            "schedule session",
+            "need therapist",
+            "want therapist",
+            "talk to someone",
+            "need someone to talk",
+            "book a session",
+            "make appointment"
         ]
         message_lower = message.lower()
         return any(keyword in message_lower for keyword in keywords)
@@ -324,27 +334,44 @@ async def ai_chatbot_websocket(websocket: WebSocket, session_id: str):
             user_message = data.get("content", "")
             user_name = data.get("user_name", "Anonymous")
             
-            # Check if user wants to book appointment
-            if ai_chat_manager.detect_appointment_request(user_message):
+            # Get current session state
+            current_state = ai_chat_manager.session_states.get(session_id, "IDLE")
+            
+            # Check if user wants to book appointment AND hasn't already booked
+            if ai_chat_manager.detect_appointment_request(user_message) and current_state == "IDLE":
                 # AI creates appointment internally
                 appointment_id = ai_chat_manager.create_appointment_from_ai(user_name, db)
                 
-                # AI responds with confirmation
+                # Update session state to BOOKED
+                ai_chat_manager.session_states[session_id] = "BOOKED"
+                
+                # AI responds with confirmation - APPOINTMENT_BOOKED event
                 await websocket.send_json({
-                    "type": "ai_message",
-                    "content": f"I've booked an appointment for you! A therapist will join your session soon.",
-                    "appointment_created": True,
+                    "type": "APPOINTMENT_BOOKED",
+                    "content": f"Perfect! I've scheduled an appointment for you. A therapist will be available soon.",
                     "appointment_id": appointment_id,
                     "timestamp": datetime.utcnow().isoformat()
                 })
-            else:
-                # Normal AI response
-                ai_response = ai_chat_manager.generate_ai_response(user_message)
+                
+                # RETURN immediately - don't continue processing
+                continue
+            
+            # If already booked, don't offer to book again
+            if current_state == "BOOKED":
                 await websocket.send_json({
                     "type": "ai_message",
-                    "content": ai_response,
+                    "content": "Your appointment has already been scheduled. You can close this chat and go to your appointments to connect with a therapist.",
                     "timestamp": datetime.utcnow().isoformat()
                 })
+                continue
+            
+            # Normal AI response (only if not booked)
+            ai_response = ai_chat_manager.generate_ai_response(user_message)
+            await websocket.send_json({
+                "type": "ai_message",
+                "content": ai_response,
+                "timestamp": datetime.utcnow().isoformat()
+            })
     
     except WebSocketDisconnect:
         ai_chat_manager.disconnect(session_id)
