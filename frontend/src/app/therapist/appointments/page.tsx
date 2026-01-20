@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import NotificationBell from '../../components/NotificationBell'
 
 interface Appointment {
   id: string
@@ -68,11 +69,14 @@ export default function TherapistAppointmentsListPage() {
             <h1 className="text-4xl font-bold text-gray-800 mb-2">Therapist - Appointments</h1>
             <p className="text-gray-600">View and join patient sessions</p>
           </div>
-          <Link href="/therapist">
-            <button className="px-4 py-2 text-gray-600 hover:text-gray-800 font-semibold">
-              ← Dashboard
-            </button>
-          </Link>
+          <div className="flex items-center space-x-4">
+            <NotificationBell role="therapist" name="All Therapists" />
+            <Link href="/therapist">
+              <button className="px-4 py-2 text-gray-600 hover:text-gray-800 font-semibold">
+                ← Dashboard
+              </button>
+            </Link>
+          </div>
         </div>
 
         {/* Appointments List */}

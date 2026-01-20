@@ -1,13 +1,17 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
 from datetime import datetime
 
 from database import engine, get_db, Base
-from models import Appointment, Message
-from schemas import AppointmentCreate, AppointmentResponse, MessageResponse
+from models import Appointment, Message, Notification, SessionNote
+from schemas import (
+    AppointmentCreate, AppointmentResponse, MessageResponse,
+    NotificationCreate, NotificationResponse,
+    SessionNoteCreate, SessionNoteUpdate, SessionNoteResponse
+)
 import uuid
 
 # Create database tables
@@ -41,6 +45,19 @@ def create_appointment(appointment: AppointmentCreate, db: Session = Depends(get
     db.add(db_appointment)
     db.commit()
     db.refresh(db_appointment)
+    
+    # Send notifications
+    create_notification(
+        db, "user", appointment.user_name,
+        "Appointment Scheduled",
+        f"Your appointment has been scheduled successfully. ID: {db_appointment.id[:8]}"
+    )
+    create_notification(
+        db, "therapist", "All Therapists",
+        "New Appointment",
+        f"New appointment from {appointment.user_name}"
+    )
+    
     return db_appointment
 
 @app.get("/appointments", response_model=List[AppointmentResponse])
@@ -62,6 +79,122 @@ def get_appointment_messages(appointment_id: str, db: Session = Depends(get_db))
     """Get messages for an appointment"""
     messages = db.query(Message).filter(Message.appointment_id == appointment_id).order_by(Message.timestamp).all()
     return messages
+
+# ====================================================
+# NOTIFICATION SERVICE
+# ====================================================
+
+def create_notification(db: Session, role: str, recipient: str, title: str, message: str) -> Notification:
+    """Helper function to create notifications"""
+    notification = Notification(
+        id=str(uuid.uuid4()),
+        recipient_role=role,
+        recipient_name=recipient,
+        title=title,
+        message=message
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+@app.get("/notifications", response_model=List[NotificationResponse])
+def get_notifications(
+    role: str = Query(..., description="Role: user or therapist"),
+    name: str = Query(..., description="Recipient name"),
+    db: Session = Depends(get_db)
+):
+    """Get notifications for a specific user or therapist"""
+    notifications = db.query(Notification).filter(
+        Notification.recipient_role == role,
+        Notification.recipient_name == name
+    ).order_by(Notification.created_at.desc()).all()
+    return notifications
+
+@app.post("/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str, db: Session = Depends(get_db)):
+    """Mark a notification as read"""
+    notification = db.query(Notification).filter(Notification.id == notification_id).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    
+    notification.is_read = True
+    db.commit()
+    return {"status": "success", "message": "Notification marked as read"}
+
+# ====================================================
+# SESSION NOTES APIs (THERAPIST ONLY)
+# ====================================================
+
+@app.post("/appointments/{appointment_id}/notes", response_model=SessionNoteResponse)
+def create_session_note(
+    appointment_id: str,
+    note: SessionNoteCreate,
+    db: Session = Depends(get_db)
+):
+    """Create or update session notes for an appointment (THERAPIST ONLY)"""
+    # Check if appointment exists
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    # Check if notes already exist for this appointment
+    existing_note = db.query(SessionNote).filter(
+        SessionNote.appointment_id == appointment_id
+    ).first()
+    
+    if existing_note:
+        # Update existing note
+        existing_note.notes = note.notes
+        existing_note.therapist_name = note.therapist_name
+        existing_note.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing_note)
+        return existing_note
+    else:
+        # Create new note
+        session_note = SessionNote(
+            id=str(uuid.uuid4()),
+            appointment_id=appointment_id,
+            therapist_name=note.therapist_name,
+            notes=note.notes
+        )
+        db.add(session_note)
+        db.commit()
+        db.refresh(session_note)
+        return session_note
+
+@app.get("/appointments/{appointment_id}/notes", response_model=SessionNoteResponse)
+def get_session_note(appointment_id: str, db: Session = Depends(get_db)):
+    """Get session notes for an appointment (THERAPIST ONLY)"""
+    session_note = db.query(SessionNote).filter(
+        SessionNote.appointment_id == appointment_id
+    ).first()
+    
+    if not session_note:
+        raise HTTPException(status_code=404, detail="Session notes not found")
+    
+    return session_note
+
+@app.put("/appointments/{appointment_id}/notes", response_model=SessionNoteResponse)
+def update_session_note(
+    appointment_id: str,
+    note_update: SessionNoteUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update session notes for an appointment (THERAPIST ONLY)"""
+    session_note = db.query(SessionNote).filter(
+        SessionNote.appointment_id == appointment_id
+    ).first()
+    
+    if not session_note:
+        raise HTTPException(status_code=404, detail="Session notes not found")
+    
+    session_note.notes = note_update.notes
+    session_note.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session_note)
+    return session_note
 
 # ====================================================
 # AI CHATBOT WEBSOCKET (COMPLETELY ISOLATED)
@@ -107,6 +240,19 @@ class AIChat:
         db.add(appointment)
         db.commit()
         db.refresh(appointment)
+        
+        # Send notifications
+        create_notification(
+            db, "user", user_name,
+            "Appointment Created",
+            f"Your appointment has been created by AI assistant. A therapist will join soon."
+        )
+        create_notification(
+            db, "therapist", "All Therapists",
+            "New AI Appointment",
+            f"AI created appointment for {user_name}"
+        )
+        
         return appointment.id
     
     def generate_ai_response(self, user_message: str) -> str:
@@ -254,6 +400,14 @@ async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, 
     if appointment.status == "scheduled":
         appointment.status = "active"
         db.commit()
+    
+    # Send notification when therapist joins
+    if role == "therapist":
+        create_notification(
+            db, "user", appointment.user_name,
+            "Therapist Joined",
+            "Your therapist has joined the session"
+        )
     
     try:
         # Send connection confirmation

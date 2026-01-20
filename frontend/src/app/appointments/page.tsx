@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import NotificationBell from '../components/NotificationBell'
 
 interface Appointment {
   id: string
@@ -15,6 +16,7 @@ interface Appointment {
 export default function AppointmentsListPage() {
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [userName, setUserName] = useState<string>('')
 
   useEffect(() => {
     fetchAppointments()
@@ -25,6 +27,11 @@ export default function AppointmentsListPage() {
       const response = await fetch('http://localhost:8000/appointments')
       const data = await response.json()
       setAppointments(data)
+      
+      // Get user name from first appointment
+      if (data.length > 0) {
+        setUserName(data[0].user_name)
+      }
     } catch (error) {
       console.error('Error fetching appointments:', error)
     } finally {
@@ -68,11 +75,14 @@ export default function AppointmentsListPage() {
             <h1 className="text-4xl font-bold text-gray-800 mb-2">My Appointments</h1>
             <p className="text-gray-600">View and manage your sessions</p>
           </div>
-          <Link href="/">
-            <button className="px-4 py-2 text-gray-600 hover:text-gray-800 font-semibold">
-              ← Home
-            </button>
-          </Link>
+          <div className="flex items-center space-x-4">
+            {userName && <NotificationBell role="user" name={userName} />}
+            <Link href="/">
+              <button className="px-4 py-2 text-gray-600 hover:text-gray-800 font-semibold">
+                ← Home
+              </button>
+            </Link>
+          </div>
         </div>
 
         {/* Appointments List */}

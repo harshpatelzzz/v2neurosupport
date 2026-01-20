@@ -28,6 +28,15 @@ interface Appointment {
   created_at: string
 }
 
+interface SessionNote {
+  id: string
+  appointment_id: string
+  therapist_name: string
+  notes: string
+  created_at: string
+  updated_at: string
+}
+
 export default function TherapistAppointmentChatPage() {
   const params = useParams()
   const appointmentId = params.id as string
@@ -38,6 +47,12 @@ export default function TherapistAppointmentChatPage() {
   const [appointment, setAppointment] = useState<Appointment | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  
+  // Session Notes State
+  const [sessionNotes, setSessionNotes] = useState('')
+  const [therapistName] = useState('Dr. Smith') // In real app, get from auth
+  const [isSaving, setIsSaving] = useState(false)
+  const [lastSaved, setLastSaved] = useState<Date | null>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -60,6 +75,25 @@ export default function TherapistAppointmentChatPage() {
     }
 
     fetchAppointment()
+  }, [appointmentId])
+
+  // Fetch session notes
+  useEffect(() => {
+    const fetchNotes = async () => {
+      try {
+        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/notes`)
+        if (response.ok) {
+          const data: SessionNote = await response.json()
+          setSessionNotes(data.notes)
+          setLastSaved(new Date(data.updated_at))
+        }
+      } catch (error) {
+        // Notes don't exist yet, that's fine
+        console.log('No notes found yet')
+      }
+    }
+
+    fetchNotes()
   }, [appointmentId])
 
   // Connect to HUMAN-ONLY WebSocket as THERAPIST
@@ -115,6 +149,31 @@ export default function TherapistAppointmentChatPage() {
     setInputValue('')
   }
 
+  // Save session notes
+  const saveNotes = async () => {
+    setIsSaving(true)
+    try {
+      const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/notes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          therapist_name: therapistName,
+          notes: sessionNotes
+        })
+      })
+
+      if (response.ok) {
+        setLastSaved(new Date())
+      }
+    } catch (error) {
+      console.error('Error saving notes:', error)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   if (!appointment) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -158,78 +217,136 @@ export default function TherapistAppointmentChatPage() {
         </div>
       </div>
 
-      {/* Messages Area - HUMAN ONLY */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 && (
-          <div className="text-center text-gray-500 mt-8">
-            <p className="text-lg">Session started</p>
-            <p className="text-sm mt-2">You can now communicate with the patient</p>
-          </div>
-        )}
-        
-        {messages.map((msg, index) => {
-          if (msg.type === 'system') {
-            return (
-              <div key={index} className="text-center">
-                <span className="px-4 py-2 bg-gray-200 text-gray-700 rounded-full text-sm">
-                  {msg.content}
-                </span>
+      {/* Split Layout: Chat (Left) | Session Notes (Right) */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Chat Section (Left - 60%) */}
+        <div className="flex-1 flex flex-col bg-white border-r border-gray-200" style={{ width: '60%' }}>
+          {/* Messages Area - HUMAN ONLY */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {messages.length === 0 && (
+              <div className="text-center text-gray-500 mt-8">
+                <p className="text-lg">Session started</p>
+                <p className="text-sm mt-2">You can now communicate with the patient</p>
               </div>
-            )
-          }
+            )}
+            
+            {messages.map((msg, index) => {
+              if (msg.type === 'system') {
+                return (
+                  <div key={index} className="text-center">
+                    <span className="px-4 py-2 bg-gray-200 text-gray-700 rounded-full text-sm">
+                      {msg.content}
+                    </span>
+                  </div>
+                )
+              }
 
-          // THERAPIST messages on LEFT, USER messages on RIGHT
-          const isTherapist = msg.sender === 'therapist'
-          
-          return (
-            <div
-              key={index}
-              className={`flex ${isTherapist ? 'justify-start' : 'justify-end'}`}
-            >
-              <div
-                className={`max-w-xs md:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl ${
-                  isTherapist
-                    ? 'bg-white text-gray-800 shadow-md'
-                    : 'bg-teal-600 text-white'
+              // THERAPIST messages on LEFT, USER messages on RIGHT
+              const isTherapist = msg.sender === 'therapist'
+              
+              return (
+                <div
+                  key={index}
+                  className={`flex ${isTherapist ? 'justify-start' : 'justify-end'}`}
+                >
+                  <div
+                    className={`max-w-xs md:max-w-md lg:max-w-lg px-4 py-3 rounded-2xl ${
+                      isTherapist
+                        ? 'bg-white text-gray-800 shadow-md border border-gray-200'
+                        : 'bg-teal-600 text-white'
+                    }`}
+                  >
+                    <div className={`text-xs font-semibold mb-1 ${
+                      isTherapist ? 'text-teal-600' : 'text-teal-200'
+                    }`}>
+                      {isTherapist ? 'You (Therapist)' : 'Patient'}
+                    </div>
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                    <div className={`text-xs mt-1 ${
+                      isTherapist ? 'text-gray-500' : 'text-teal-200'
+                    }`}>
+                      {new Date(msg.timestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input Area - HUMAN ONLY */}
+          <div className="bg-white border-t border-gray-200 p-4">
+            <form onSubmit={handleSendMessage} className="flex space-x-2">
+              <input
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                placeholder="Type your message to patient..."
+                className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-teal-500"
+                disabled={!isConnected}
+              />
+              <button
+                type="submit"
+                disabled={!isConnected}
+                className="px-6 py-3 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-colors disabled:bg-gray-400"
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {/* Session Notes Panel (Right - 40%) */}
+        <div className="bg-gradient-to-b from-amber-50 to-yellow-50 flex flex-col" style={{ width: '40%' }}>
+          <div className="p-4 border-b border-amber-200 bg-amber-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-amber-900">📝 Session Notes</h2>
+                <p className="text-sm text-amber-700">Private notes - not visible to patient</p>
+              </div>
+              <button
+                onClick={saveNotes}
+                disabled={isSaving}
+                className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                  isSaving
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-amber-600 text-white hover:bg-amber-700'
                 }`}
               >
-                <div className={`text-xs font-semibold mb-1 ${
-                  isTherapist ? 'text-teal-600' : 'text-teal-200'
-                }`}>
-                  {isTherapist ? 'You (Therapist)' : 'Patient'}
-                </div>
-                <p className="whitespace-pre-wrap">{msg.content}</p>
-                <div className={`text-xs mt-1 ${
-                  isTherapist ? 'text-gray-500' : 'text-teal-200'
-                }`}>
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </div>
-              </div>
+                {isSaving ? 'Saving...' : 'Save Notes'}
+              </button>
             </div>
-          )
-        })}
-        <div ref={messagesEndRef} />
-      </div>
+            {lastSaved && (
+              <p className="text-xs text-amber-600 mt-2">
+                Last saved: {lastSaved.toLocaleTimeString()}
+              </p>
+            )}
+          </div>
 
-      {/* Input Area - HUMAN ONLY */}
-      <div className="bg-white border-t border-gray-200 p-4">
-        <form onSubmit={handleSendMessage} className="flex space-x-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type your message to patient..."
-            className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-teal-500"
-            disabled={!isConnected}
-          />
-          <button
-            type="submit"
-            disabled={!isConnected}
-            className="px-6 py-3 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-colors disabled:bg-gray-400"
-          >
-            Send
-          </button>
-        </form>
+          <div className="flex-1 p-4 overflow-y-auto">
+            <textarea
+              value={sessionNotes}
+              onChange={(e) => setSessionNotes(e.target.value)}
+              placeholder="Write your private session notes here...
+
+Examples:
+- Patient mood and demeanor
+- Key topics discussed
+- Progress observations
+- Treatment plan updates
+- Next session goals"
+              className="w-full h-full p-4 border-2 border-amber-200 rounded-lg focus:outline-none focus:border-amber-500 resize-none bg-white"
+              style={{ minHeight: '400px' }}
+            />
+          </div>
+
+          <div className="p-4 bg-amber-100 border-t border-amber-200">
+            <div className="text-xs text-amber-800">
+              <p className="font-semibold mb-1">⚠️ Privacy Notice:</p>
+              <p>These notes are private and secure. They are NEVER shared with the patient or visible in the chat.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

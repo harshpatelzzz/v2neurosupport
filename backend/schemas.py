@@ -27,3 +27,39 @@ class MessageResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class NotificationCreate(BaseModel):
+    recipient_role: str  # "user" | "therapist"
+    recipient_name: str
+    title: str
+    message: str
+
+class NotificationResponse(BaseModel):
+    id: str
+    recipient_role: str
+    recipient_name: str
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class SessionNoteCreate(BaseModel):
+    therapist_name: str
+    notes: str
+
+class SessionNoteUpdate(BaseModel):
+    notes: str
+
+class SessionNoteResponse(BaseModel):
+    id: str
+    appointment_id: str
+    therapist_name: str
+    notes: str
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
