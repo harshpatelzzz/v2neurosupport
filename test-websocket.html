@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test - NeuroSupport AI Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            height: 300px;
+            overflow-y: auto;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 5px;
+        }
+        .user { background: #e3f2fd; }
+        .ai { background: #f3e5f5; }
+        .system { background: #fff3e0; }
+        input, button {
+            padding: 10px;
+            margin: 5px;
+        }
+        input { width: 70%; }
+        button { width: 20%; }
+        .status { padding: 10px; margin: 10px 0; }
+        .connected { background: #c8e6c9; }
+        .disconnected { background: #ffcdd2; }
+    </style>
+</head>
+<body>
+    <h1>🤖 WebSocket Test - AI Chatbot</h1>
+    
+    <div id="status" class="status disconnected">Status: Disconnected</div>
+    
+    <div>
+        <label>Your Name:</label>
+        <input type="text" id="userName" placeholder="Enter your name" value="TestUser">
+        <button onclick="connect()">Connect</button>
+    </div>
+    
+    <div id="messages"></div>
+    
+    <div>
+        <input type="text" id="messageInput" placeholder="Type your message..." onkeypress="if(event.keyCode==13) sendMessage()">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        let ws = null;
+        const sessionId = Math.random().toString(36).substring(7);
+        
+        function connect() {
+            const userName = document.getElementById('userName').value;
+            if (!userName) {
+                alert('Please enter your name');
+                return;
+            }
+            
+            // Connect to WebSocket
+            const wsUrl = `ws://localhost:8000/ws/ai-chat/${sessionId}`;
+            addMessage('system', `Connecting to: ${wsUrl}`);
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                addMessage('system', '✅ Connected to AI chatbot!');
+                document.getElementById('status').className = 'status connected';
+                document.getElementById('status').textContent = 'Status: Connected';
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                addMessage('ai', data.content);
+                
+                if (data.appointment_created) {
+                    addMessage('system', `🎉 Appointment created! ID: ${data.appointment_id}`);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                addMessage('system', '❌ WebSocket Error: ' + error);
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+                addMessage('system', '🔌 Disconnected from AI chatbot');
+                document.getElementById('status').className = 'status disconnected';
+                document.getElementById('status').textContent = 'Status: Disconnected';
+            };
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            const userName = document.getElementById('userName').value;
+            
+            if (!message || !ws) return;
+            
+            // Send message
+            ws.send(JSON.stringify({
+                content: message,
+                user_name: userName
+            }));
+            
+            addMessage('user', message);
+            input.value = '';
+        }
+        
+        function addMessage(type, content) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = `[${new Date().toLocaleTimeString()}] ${type.toUpperCase()}: ${content}`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Test messages
+        addMessage('system', 'Click "Connect" to start');
+        addMessage('system', 'Try saying: "I need a therapist" to trigger appointment creation');
+    </script>
+</body>
+</html>

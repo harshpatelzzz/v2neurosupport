@@ -1,0 +1,305 @@
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from typing import Dict, List
+import json
+from datetime import datetime
+
+from database import engine, get_db, Base
+from models import Appointment, Message
+from schemas import AppointmentCreate, AppointmentResponse, MessageResponse
+import uuid
+
+# Create database tables
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="NeuroSupport-V2 Backend")
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ====================================================
+# REST API ENDPOINTS
+# ====================================================
+
+@app.post("/appointments", response_model=AppointmentResponse)
+def create_appointment(appointment: AppointmentCreate, db: Session = Depends(get_db)):
+    """Create a new appointment manually"""
+    db_appointment = Appointment(
+        id=str(uuid.uuid4()),
+        user_name=appointment.user_name,
+        therapist_name=appointment.therapist_name,
+        status="scheduled",
+        created_from=appointment.created_from
+    )
+    db.add(db_appointment)
+    db.commit()
+    db.refresh(db_appointment)
+    return db_appointment
+
+@app.get("/appointments", response_model=List[AppointmentResponse])
+def get_appointments(db: Session = Depends(get_db)):
+    """Get all appointments"""
+    appointments = db.query(Appointment).order_by(Appointment.created_at.desc()).all()
+    return appointments
+
+@app.get("/appointments/{appointment_id}", response_model=AppointmentResponse)
+def get_appointment(appointment_id: str, db: Session = Depends(get_db)):
+    """Get appointment details"""
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    return appointment
+
+@app.get("/appointments/{appointment_id}/messages", response_model=List[MessageResponse])
+def get_appointment_messages(appointment_id: str, db: Session = Depends(get_db)):
+    """Get messages for an appointment"""
+    messages = db.query(Message).filter(Message.appointment_id == appointment_id).order_by(Message.timestamp).all()
+    return messages
+
+# ====================================================
+# AI CHATBOT WEBSOCKET (COMPLETELY ISOLATED)
+# ====================================================
+
+class AIChat:
+    """AI Chatbot Manager - NO ACCESS TO APPOINTMENT CHAT"""
+    
+    def __init__(self):
+        self.active_sessions: Dict[str, WebSocket] = {}
+    
+    async def connect(self, session_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_sessions[session_id] = websocket
+    
+    def disconnect(self, session_id: str):
+        if session_id in self.active_sessions:
+            del self.active_sessions[session_id]
+    
+    def detect_appointment_request(self, message: str) -> bool:
+        """Detect if user wants to book an appointment"""
+        keywords = [
+            "book appointment",
+            "schedule appointment",
+            "need a therapist",
+            "see a therapist",
+            "talk to therapist",
+            "book session",
+            "schedule session"
+        ]
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in keywords)
+    
+    def create_appointment_from_ai(self, user_name: str, db: Session) -> str:
+        """AI creates appointment - internal function only"""
+        appointment = Appointment(
+            id=str(uuid.uuid4()),
+            user_name=user_name,
+            therapist_name=None,
+            status="scheduled",
+            created_from="ai"
+        )
+        db.add(appointment)
+        db.commit()
+        db.refresh(appointment)
+        return appointment.id
+    
+    def generate_ai_response(self, user_message: str) -> str:
+        """Simple rule-based AI responses"""
+        message_lower = user_message.lower()
+        
+        if "hello" in message_lower or "hi" in message_lower:
+            return "Hello! I'm here to help you with mental health support. How can I assist you today?"
+        elif "how are you" in message_lower:
+            return "I'm doing well, thank you for asking! How are you feeling today?"
+        elif "sad" in message_lower or "depressed" in message_lower:
+            return "I'm sorry to hear you're feeling this way. Would you like to book an appointment with one of our therapists?"
+        elif "anxious" in message_lower or "anxiety" in message_lower:
+            return "Anxiety can be challenging. Our therapists can help you develop coping strategies. Would you like to schedule a session?"
+        elif "help" in message_lower:
+            return "I can help you book an appointment with a therapist, answer general questions about mental health, or just listen. What would you like to do?"
+        else:
+            return "I understand. If you'd like to speak with a professional therapist, just let me know and I can book an appointment for you."
+
+ai_chat_manager = AIChat()
+
+@app.websocket("/ws/ai-chat/{session_id}")
+async def ai_chatbot_websocket(websocket: WebSocket, session_id: str):
+    """
+    AI CHATBOT WEBSOCKET - AI ONLY
+    NO ACCESS TO APPOINTMENT CHAT
+    NO THERAPIST COMMUNICATION
+    """
+    await ai_chat_manager.connect(session_id, websocket)
+    
+    # Get DB session
+    db = next(get_db())
+    
+    try:
+        # Send welcome message
+        await websocket.send_json({
+            "type": "ai_message",
+            "content": "Hello! I'm your AI mental health support assistant. How can I help you today?",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        while True:
+            data = await websocket.receive_json()
+            user_message = data.get("content", "")
+            user_name = data.get("user_name", "Anonymous")
+            
+            # Check if user wants to book appointment
+            if ai_chat_manager.detect_appointment_request(user_message):
+                # AI creates appointment internally
+                appointment_id = ai_chat_manager.create_appointment_from_ai(user_name, db)
+                
+                # AI responds with confirmation
+                await websocket.send_json({
+                    "type": "ai_message",
+                    "content": f"I've booked an appointment for you! A therapist will join your session soon.",
+                    "appointment_created": True,
+                    "appointment_id": appointment_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            else:
+                # Normal AI response
+                ai_response = ai_chat_manager.generate_ai_response(user_message)
+                await websocket.send_json({
+                    "type": "ai_message",
+                    "content": ai_response,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+    
+    except WebSocketDisconnect:
+        ai_chat_manager.disconnect(session_id)
+    finally:
+        db.close()
+
+# ====================================================
+# APPOINTMENT CHAT WEBSOCKET (HUMAN ONLY - COMPLETELY ISOLATED)
+# ====================================================
+
+class AppointmentChat:
+    """
+    HUMAN-ONLY APPOINTMENT CHAT MANAGER
+    NO AI IMPORTS
+    NO CHATBOT LOGIC
+    NO EMOTION DETECTION
+    ONLY RELAY MESSAGES BETWEEN USER AND THERAPIST
+    """
+    
+    def __init__(self):
+        # Store one user and one therapist socket per appointment
+        self.connections: Dict[str, Dict[str, WebSocket]] = {}
+    
+    async def connect(self, appointment_id: str, role: str, websocket: WebSocket):
+        await websocket.accept()
+        
+        if appointment_id not in self.connections:
+            self.connections[appointment_id] = {}
+        
+        self.connections[appointment_id][role] = websocket
+    
+    def disconnect(self, appointment_id: str, role: str):
+        if appointment_id in self.connections:
+            if role in self.connections[appointment_id]:
+                del self.connections[appointment_id][role]
+            if not self.connections[appointment_id]:
+                del self.connections[appointment_id]
+    
+    async def broadcast_to_appointment(self, appointment_id: str, message: dict, sender_role: str):
+        """Send message to the other party in the appointment"""
+        if appointment_id not in self.connections:
+            return
+        
+        # Send to the OTHER role (not the sender)
+        target_role = "therapist" if sender_role == "user" else "user"
+        
+        if target_role in self.connections[appointment_id]:
+            await self.connections[appointment_id][target_role].send_json(message)
+
+appointment_chat_manager = AppointmentChat()
+
+@app.websocket("/ws/appointment-chat/{appointment_id}")
+async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, role: str = None):
+    """
+    HUMAN-ONLY APPOINTMENT CHAT WEBSOCKET
+    NO AI - PHYSICALLY IMPOSSIBLE
+    ONLY RELAY BETWEEN USER AND THERAPIST
+    """
+    
+    # Validate role
+    if not role or role not in ["user", "therapist"]:
+        await websocket.close(code=1008, reason="Invalid or missing role parameter")
+        return
+    
+    # Get DB session
+    db = next(get_db())
+    
+    # Check if appointment exists
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not appointment:
+        await websocket.close(code=1008, reason="Appointment not found")
+        db.close()
+        return
+    
+    await appointment_chat_manager.connect(appointment_id, role, websocket)
+    
+    # Update appointment status to active
+    if appointment.status == "scheduled":
+        appointment.status = "active"
+        db.commit()
+    
+    try:
+        # Send connection confirmation
+        await websocket.send_json({
+            "type": "system",
+            "content": f"Connected as {role}",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        while True:
+            data = await websocket.receive_json()
+            content = data.get("content", "")
+            
+            if not content:
+                continue
+            
+            # Save message to database
+            message = Message(
+                id=str(uuid.uuid4()),
+                appointment_id=appointment_id,
+                sender=role,
+                content=content,
+                timestamp=datetime.utcnow()
+            )
+            db.add(message)
+            db.commit()
+            
+            # Broadcast to the other party
+            message_data = {
+                "type": "message",
+                "sender": role,
+                "content": content,
+                "timestamp": message.timestamp.isoformat()
+            }
+            
+            await appointment_chat_manager.broadcast_to_appointment(
+                appointment_id, 
+                message_data, 
+                role
+            )
+    
+    except WebSocketDisconnect:
+        appointment_chat_manager.disconnect(appointment_id, role)
+    finally:
+        db.close()
+
+@app.get("/")
+def read_root():
+    return {"message": "NeuroSupport-V2 Backend API", "status": "running"}
