@@ -80,6 +80,31 @@ def get_appointment_messages(appointment_id: str, db: Session = Depends(get_db))
     messages = db.query(Message).filter(Message.appointment_id == appointment_id).order_by(Message.timestamp).all()
     return messages
 
+@app.post("/appointments/{appointment_id}/end-session")
+def end_appointment_session(appointment_id: str, db: Session = Depends(get_db)):
+    """End an appointment session (THERAPIST ONLY)"""
+    # Get appointment
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    if not appointment:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    # Mark as completed
+    appointment.status = "completed"
+    db.commit()
+    
+    # Send notification to user
+    create_notification(
+        db, "user", appointment.user_name,
+        "Session Ended",
+        "Your therapist has ended the session."
+    )
+    
+    return {
+        "status": "success",
+        "message": "Session ended successfully",
+        "appointment_id": appointment_id
+    }
+
 # ====================================================
 # NOTIFICATION SERVICE
 # ====================================================
@@ -419,9 +444,46 @@ async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, 
         
         while True:
             data = await websocket.receive_json()
+            
+            # Check for special commands
+            if data.get("type") == "END_SESSION":
+                # Therapist is ending the session
+                if role == "therapist":
+                    # Mark appointment as completed
+                    appointment.status = "completed"
+                    db.commit()
+                    
+                    # Broadcast SESSION_ENDED to both parties
+                    session_ended_event = {
+                        "type": "SESSION_ENDED",
+                        "message": "The therapist has ended the session.",
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    
+                    # Send to therapist
+                    await websocket.send_json(session_ended_event)
+                    
+                    # Send to user
+                    await appointment_chat_manager.broadcast_to_appointment(
+                        appointment_id,
+                        session_ended_event,
+                        role
+                    )
+                continue
+            
             content = data.get("content", "")
             
             if not content:
+                continue
+            
+            # SAFETY CHECK: Ignore messages if session is completed
+            current_appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+            if current_appointment and current_appointment.status == "completed":
+                # Session ended - ignore message
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Cannot send messages - session has ended"
+                })
                 continue
             
             # Save message to database

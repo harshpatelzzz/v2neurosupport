@@ -53,6 +53,10 @@ export default function TherapistAppointmentChatPage() {
   const [therapistName] = useState('Dr. Smith') // In real app, get from auth
   const [isSaving, setIsSaving] = useState(false)
   const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  
+  // Session State
+  const [sessionEnded, setSessionEnded] = useState(false)
+  const [isEndingSession, setIsEndingSession] = useState(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -109,7 +113,19 @@ export default function TherapistAppointmentChatPage() {
 
     websocket.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      setMessages(prev => [...prev, data])
+      
+      // Check for SESSION_ENDED event
+      if (data.type === 'SESSION_ENDED') {
+        setSessionEnded(true)
+        setMessages(prev => [...prev, {
+          type: 'system',
+          sender: 'therapist',
+          content: data.message,
+          timestamp: data.timestamp
+        }])
+      } else {
+        setMessages(prev => [...prev, data])
+      }
     }
 
     websocket.onerror = (error) => {
@@ -130,7 +146,7 @@ export default function TherapistAppointmentChatPage() {
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!inputValue.trim() || !ws || !isConnected) return
+    if (!inputValue.trim() || !ws || !isConnected || sessionEnded) return
 
     // Send HUMAN message to WebSocket
     ws.send(JSON.stringify({
@@ -147,6 +163,39 @@ export default function TherapistAppointmentChatPage() {
     setMessages(prev => [...prev, therapistMessage])
 
     setInputValue('')
+  }
+
+  // End session handler
+  const handleEndSession = async () => {
+    if (!window.confirm('Are you sure you want to end this session? This action cannot be undone.')) {
+      return
+    }
+
+    setIsEndingSession(true)
+    try {
+      // Call REST API to end session
+      const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/end-session`, {
+        method: 'POST'
+      })
+
+      if (response.ok) {
+        // Send WebSocket event to broadcast to both parties
+        if (ws) {
+          ws.send(JSON.stringify({
+            type: 'END_SESSION'
+          }))
+        }
+        
+        setSessionEnded(true)
+      } else {
+        alert('Failed to end session')
+      }
+    } catch (error) {
+      console.error('Error ending session:', error)
+      alert('Failed to end session')
+    } finally {
+      setIsEndingSession(false)
+    }
   }
 
   // Save session notes
@@ -187,15 +236,17 @@ export default function TherapistAppointmentChatPage() {
       {/* Header */}
       <div className="bg-white shadow-md p-4">
         <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center space-x-3 mb-1">
+          <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-3">
               <div className="text-3xl">👨‍⚕️</div>
               <div>
                 <h1 className="text-xl font-bold text-gray-800">
                   Therapist Session
                 </h1>
                 <p className="text-sm text-gray-600">
-                  {isConnected ? (
+                  {sessionEnded ? (
+                    <span className="text-gray-500">● Session Completed</span>
+                  ) : isConnected ? (
                     <span className="text-green-600">● Connected</span>
                   ) : (
                     <span className="text-red-600">● Disconnected</span>
@@ -203,7 +254,23 @@ export default function TherapistAppointmentChatPage() {
                 </p>
               </div>
             </div>
+            
+            {/* End Session Button */}
+            {!sessionEnded && isConnected && (
+              <button
+                onClick={handleEndSession}
+                disabled={isEndingSession}
+                className={`px-4 py-2 rounded-lg font-semibold transition-colors ${
+                  isEndingSession
+                    ? 'bg-gray-400 text-white cursor-not-allowed'
+                    : 'bg-red-600 text-white hover:bg-red-700'
+                }`}
+              >
+                {isEndingSession ? 'Ending...' : '🛑 End Session'}
+              </button>
+            )}
           </div>
+          
           <Link href="/therapist/appointments">
             <button className="px-4 py-2 text-gray-600 hover:text-gray-800 font-semibold">
               ← Back
@@ -276,23 +343,29 @@ export default function TherapistAppointmentChatPage() {
 
           {/* Input Area - HUMAN ONLY */}
           <div className="bg-white border-t border-gray-200 p-4">
-            <form onSubmit={handleSendMessage} className="flex space-x-2">
-              <input
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                placeholder="Type your message to patient..."
-                className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-teal-500"
-                disabled={!isConnected}
-              />
-              <button
-                type="submit"
-                disabled={!isConnected}
-                className="px-6 py-3 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-colors disabled:bg-gray-400"
-              >
-                Send
-              </button>
-            </form>
+            {sessionEnded ? (
+              <div className="text-center py-3 bg-gray-100 rounded-lg">
+                <p className="text-gray-600 font-semibold">Session has ended - Chat is now read-only</p>
+              </div>
+            ) : (
+              <form onSubmit={handleSendMessage} className="flex space-x-2">
+                <input
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder="Type your message to patient..."
+                  className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-teal-500"
+                  disabled={!isConnected || sessionEnded}
+                />
+                <button
+                  type="submit"
+                  disabled={!isConnected || sessionEnded}
+                  className="px-6 py-3 bg-teal-600 text-white rounded-lg font-semibold hover:bg-teal-700 transition-colors disabled:bg-gray-400"
+                >
+                  Send
+                </button>
+              </form>
+            )}
           </div>
         </div>
 

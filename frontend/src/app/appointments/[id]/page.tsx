@@ -37,6 +37,7 @@ export default function UserAppointmentChatPage() {
   const [ws, setWs] = useState<WebSocket | null>(null)
   const [appointment, setAppointment] = useState<Appointment | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+  const [sessionEnded, setSessionEnded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
@@ -75,7 +76,19 @@ export default function UserAppointmentChatPage() {
 
     websocket.onmessage = (event) => {
       const data = JSON.parse(event.data)
-      setMessages(prev => [...prev, data])
+      
+      // Check for SESSION_ENDED event
+      if (data.type === 'SESSION_ENDED') {
+        setSessionEnded(true)
+        setMessages(prev => [...prev, {
+          type: 'system',
+          sender: 'user',
+          content: data.message,
+          timestamp: data.timestamp
+        }])
+      } else {
+        setMessages(prev => [...prev, data])
+      }
     }
 
     websocket.onerror = (error) => {
@@ -96,7 +109,7 @@ export default function UserAppointmentChatPage() {
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!inputValue.trim() || !ws || !isConnected) return
+    if (!inputValue.trim() || !ws || !isConnected || sessionEnded) return
 
     // Send HUMAN message to WebSocket
     ws.send(JSON.stringify({
@@ -136,7 +149,9 @@ export default function UserAppointmentChatPage() {
                   Appointment Chat
                 </h1>
                 <p className="text-sm text-gray-600">
-                  {isConnected ? (
+                  {sessionEnded ? (
+                    <span className="text-gray-500">● Session Completed</span>
+                  ) : isConnected ? (
                     <span className="text-green-600">● Connected</span>
                   ) : (
                     <span className="text-red-600">● Disconnected</span>
@@ -215,23 +230,30 @@ export default function UserAppointmentChatPage() {
 
       {/* Input Area - HUMAN ONLY */}
       <div className="bg-white border-t border-gray-200 p-4">
-        <form onSubmit={handleSendMessage} className="flex space-x-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type your message to therapist..."
-            className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500"
-            disabled={!isConnected}
-          />
-          <button
-            type="submit"
-            disabled={!isConnected}
-            className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors disabled:bg-gray-400"
-          >
-            Send
-          </button>
-        </form>
+        {sessionEnded ? (
+          <div className="text-center py-3 bg-gray-100 rounded-lg">
+            <p className="text-gray-600 font-semibold">Session has ended - Chat is now read-only</p>
+            <p className="text-sm text-gray-500 mt-1">Your therapist has completed this session</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSendMessage} className="flex space-x-2">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Type your message to therapist..."
+              className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-indigo-500"
+              disabled={!isConnected || sessionEnded}
+            />
+            <button
+              type="submit"
+              disabled={!isConnected || sessionEnded}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors disabled:bg-gray-400"
+            >
+              Send
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )
