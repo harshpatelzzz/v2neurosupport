@@ -34,6 +34,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/status")
+def get_system_status():
+    """Check if Gemini AI is enabled"""
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    return {
+        "gemini_enabled": bool(api_key and api_key != "your_api_key_here"),
+        "api_key_present": bool(api_key),
+        "api_key_length": len(api_key) if api_key else 0,
+        "use_gemini": ai_chat_manager.use_gemini if 'ai_chat_manager' in globals() else False
+    }
+
+@app.on_event("startup")
+async def startup_event():
+    """Log system status on startup"""
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if api_key and api_key != "your_api_key_here":
+        print("=" * 60)
+        print("[STARTUP] Gemini AI: ENABLED")
+        print(f"[STARTUP] API Key: {api_key[:20]}...")
+        print("=" * 60)
+    else:
+        print("=" * 60)
+        print("[STARTUP] Gemini AI: DISABLED (using fallback)")
+        print("=" * 60)
+
 # ====================================================
 # REST API ENDPOINTS
 # ====================================================
@@ -241,14 +266,23 @@ class AIChat:
         
         # Configure Gemini API
         api_key = os.getenv("GEMINI_API_KEY", "")
-        if api_key:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
-            self.use_gemini = True
+        print(f"[DEBUG] API Key loaded: {bool(api_key)} (length: {len(api_key) if api_key else 0})")
+        
+        if api_key and api_key != "your_api_key_here":
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.use_gemini = True
+                print("[SUCCESS] Gemini AI configured and ready to use!")
+            except Exception as e:
+                print(f"[ERROR] Gemini configuration failed: {e}")
+                self.model = None
+                self.use_gemini = False
+                print("[WARNING] Falling back to rule-based responses.")
         else:
             self.model = None
             self.use_gemini = False
-            print("⚠️ GEMINI_API_KEY not found. Using fallback responses.")
+            print("[WARNING] GEMINI_API_KEY not found or placeholder value. Using fallback responses.")
     
     async def connect(self, session_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -314,6 +348,8 @@ class AIChat:
     def generate_ai_response(self, user_message: str, session_id: str, user_name: str) -> str:
         """Generate AI response using Google Gemini or fallback"""
         
+        print(f"[AI RESPONSE] use_gemini={self.use_gemini}, model_exists={bool(self.model)}")
+        
         if self.use_gemini and self.model:
             try:
                 # Build conversation context
@@ -362,7 +398,8 @@ Guidelines:
                 return ai_message
                 
             except Exception as e:
-                print(f"Gemini API error: {e}")
+                print(f"[ERROR] Gemini API call failed: {e}")
+                print(f"[INFO] User message was: {user_message[:50]}...")
                 # Fallback to rule-based
                 return self._fallback_response(user_message)
         else:
