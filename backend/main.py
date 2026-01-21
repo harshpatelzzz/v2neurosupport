@@ -4,6 +4,12 @@ from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 import json
 from datetime import datetime
+import os
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from database import engine, get_db, Base
 from models import Appointment, Message, Notification, SessionNote
@@ -226,22 +232,37 @@ def update_session_note(
 # ====================================================
 
 class AIChat:
-    """AI Chatbot Manager - NO ACCESS TO APPOINTMENT CHAT"""
+    """AI Chatbot Manager with Google Gemini - NO ACCESS TO APPOINTMENT CHAT"""
     
     def __init__(self):
         self.active_sessions: Dict[str, WebSocket] = {}
         self.session_states: Dict[str, str] = {}  # Track state: IDLE or BOOKED
+        self.conversation_history: Dict[str, List] = {}  # Track conversation per session
+        
+        # Configure Gemini API
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if api_key:
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel('gemini-pro')
+            self.use_gemini = True
+        else:
+            self.model = None
+            self.use_gemini = False
+            print("⚠️ GEMINI_API_KEY not found. Using fallback responses.")
     
     async def connect(self, session_id: str, websocket: WebSocket):
         await websocket.accept()
         self.active_sessions[session_id] = websocket
         self.session_states[session_id] = "IDLE"  # Initialize state
+        self.conversation_history[session_id] = []  # Initialize conversation history
     
     def disconnect(self, session_id: str):
         if session_id in self.active_sessions:
             del self.active_sessions[session_id]
         if session_id in self.session_states:
             del self.session_states[session_id]
+        if session_id in self.conversation_history:
+            del self.conversation_history[session_id]
     
     def detect_appointment_request(self, message: str) -> bool:
         """Detect if user wants to book an appointment with explicit keywords"""
@@ -290,8 +311,65 @@ class AIChat:
         
         return appointment.id
     
-    def generate_ai_response(self, user_message: str) -> str:
-        """Simple rule-based AI responses"""
+    def generate_ai_response(self, user_message: str, session_id: str, user_name: str) -> str:
+        """Generate AI response using Google Gemini or fallback"""
+        
+        if self.use_gemini and self.model:
+            try:
+                # Build conversation context
+                system_context = f"""You are a compassionate mental health support AI assistant named NeuroSupport.
+
+Your role:
+- Provide empathetic mental health support
+- Listen actively and respond with care
+- Offer general mental health advice and coping strategies
+- Help users feel heard and supported
+
+Important capabilities:
+- You can help users book appointments with licensed therapists
+- If a user expresses need for professional help, suggest booking an appointment
+- You are NOT a replacement for professional therapy
+
+User's name: {user_name}
+
+Guidelines:
+- Be warm, empathetic, and supportive
+- Keep responses concise (2-4 sentences)
+- If user seems in crisis, strongly encourage booking an appointment
+- Never claim to be a licensed therapist
+- Focus on emotional support and general wellness advice
+"""
+                
+                # Get conversation history for this session
+                history = self.conversation_history.get(session_id, [])
+                
+                # Build the prompt with history
+                if len(history) > 0:
+                    conversation = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-6:]])  # Last 3 exchanges
+                    prompt = f"{system_context}\n\nConversation history:\n{conversation}\n\nUser: {user_message}\n\nAssistant:"
+                else:
+                    prompt = f"{system_context}\n\nUser: {user_message}\n\nAssistant:"
+                
+                # Generate response
+                response = self.model.generate_content(prompt)
+                ai_message = response.text.strip()
+                
+                # Update conversation history
+                history.append({"role": "User", "content": user_message})
+                history.append({"role": "Assistant", "content": ai_message})
+                self.conversation_history[session_id] = history
+                
+                return ai_message
+                
+            except Exception as e:
+                print(f"Gemini API error: {e}")
+                # Fallback to rule-based
+                return self._fallback_response(user_message)
+        else:
+            return self._fallback_response(user_message)
+    
+    def _fallback_response(self, user_message: str) -> str:
+        """Fallback rule-based responses when Gemini is unavailable"""
         message_lower = user_message.lower()
         
         if "hello" in message_lower or "hi" in message_lower:
@@ -366,7 +444,7 @@ async def ai_chatbot_websocket(websocket: WebSocket, session_id: str):
                 continue
             
             # Normal AI response (only if not booked)
-            ai_response = ai_chat_manager.generate_ai_response(user_message)
+            ai_response = ai_chat_manager.generate_ai_response(user_message, session_id, user_name)
             await websocket.send_json({
                 "type": "ai_message",
                 "content": ai_response,
