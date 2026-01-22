@@ -4,7 +4,52 @@
 
 ---
 
-## 📋 Prerequisites
+## 🐳 Quick Start with Docker (Easiest Method!)
+
+**If you have Docker installed, you can skip all the manual setup!**
+
+### Prerequisites for Docker:
+- **Docker Desktop** installed (https://www.docker.com/products/docker-desktop/)
+- **Git** installed
+
+### Steps:
+
+1. **Clone the repository:**
+   ```powershell
+   git clone https://github.com/harshpatelzzz/v2neurosupport.git
+   cd v2neurosupport
+   ```
+
+2. **Create `.env` file (optional, for Gemini API):**
+   ```powershell
+   # Create .env in project root
+   echo "GEMINI_API_KEY=your_api_key_here" > .env
+   ```
+
+3. **Run everything with one command:**
+   ```powershell
+   docker-compose up
+   ```
+
+4. **That's it!** 🎉
+   - Backend: http://localhost:8000
+   - Frontend: http://localhost:3000
+
+**To stop:**
+```powershell
+docker-compose down
+```
+
+**To rebuild after code changes:**
+```powershell
+docker-compose up --build
+```
+
+---
+
+## 📋 Manual Setup (If you prefer or don't have Docker)
+
+**Prerequisites:**
 
 ### 1. Install Python 3.10+ (Recommended: Python 3.11 or 3.12)
 

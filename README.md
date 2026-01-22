@@ -2,7 +2,9 @@
 
 A full-stack mental health support platform with completely isolated AI chatbot and human appointment chat systems.
 
-> **📖 New to this project?** See [SETUP_NEW_LAPTOP.md](./SETUP_NEW_LAPTOP.md) for complete step-by-step setup instructions on a fresh laptop.
+> **📖 New to this project?** 
+> - **🐳 Easiest:** [DOCKER_SETUP.md](./DOCKER_SETUP.md) - Just Docker needed!
+> - **📋 Manual:** [SETUP_NEW_LAPTOP.md](./SETUP_NEW_LAPTOP.md) - Complete step-by-step guide
 
 ## 🏗️ Architecture Overview
 
