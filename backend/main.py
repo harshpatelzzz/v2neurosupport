@@ -5,11 +5,13 @@ from typing import Dict, List, Optional
 import json
 from datetime import datetime
 import os
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load .env from backend directory so GROQ_API_KEY is always found
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_backend_dir, ".env"))
+load_dotenv()  # also allow project root .env
 
 from database import engine, get_db, Base
 from models import Appointment, Message, Notification, SessionNote, User, Therapist
@@ -43,27 +45,26 @@ app.add_middleware(
 
 @app.get("/api/status")
 def get_system_status():
-    """Check if Gemini AI is enabled"""
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    """Check if GROQ AI is enabled"""
+    api_key = os.getenv("GROQ_API_KEY", "")
     return {
-        "gemini_enabled": bool(api_key and api_key != "your_api_key_here"),
+        "groq_enabled": bool(api_key and api_key.strip()),
         "api_key_present": bool(api_key),
-        "api_key_length": len(api_key) if api_key else 0,
-        "use_gemini": ai_chat_manager.use_gemini if 'ai_chat_manager' in globals() else False
+        "use_groq": ai_chat_manager.use_groq if 'ai_chat_manager' in globals() else False
     }
 
 @app.on_event("startup")
 async def startup_event():
     """Log system status on startup"""
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if api_key and api_key != "your_api_key_here":
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if api_key and api_key.strip():
         print("=" * 60)
-        print("[STARTUP] Gemini AI: ENABLED")
+        print("[STARTUP] GROQ AI: ENABLED")
         print(f"[STARTUP] API Key: {api_key[:20]}...")
         print("=" * 60)
     else:
         print("=" * 60)
-        print("[STARTUP] Gemini AI: DISABLED (using fallback)")
+        print("[STARTUP] GROQ AI: DISABLED (using fallback)")
         print("=" * 60)
 
 # ====================================================
@@ -528,70 +529,64 @@ def get_analytics(
 # AI CHATBOT WEBSOCKET (COMPLETELY ISOLATED)
 # ====================================================
 
+# System prompt for the health-support chatbot (used with GROQ)
+HEALTH_CHATBOT_SYSTEM = """You are NeuroSupport, a warm and knowledgeable mental health support assistant. You talk to people about their wellbeing, emotions, and daily life.
+
+Your role:
+- Have real, natural conversations. Ask follow-up questions and show you're listening.
+- Offer emotional support and gentle guidance (sleep, stress, mood, anxiety, relationships, habits).
+- Suggest healthy coping strategies and small steps they can take.
+- If someone wants to speak to a professional, tell them they can say "book appointment" or "I need a therapist" and you'll schedule one.
+- You are NOT a doctor or therapist. Never diagnose. For serious or urgent concerns, encourage professional help.
+
+How to respond:
+- Be conversational and human. Reply in 2–5 sentences unless they need more.
+- Use their name when it fits. Be empathetic and non-judgmental.
+- Sometimes ask a short follow-up (e.g. "How long has this been going on?" or "What usually helps you?") to understand and guide better.
+- Keep a supportive, calm tone. Never give medical advice or medication suggestions."""
+
+
 class AIChat:
-    """AI Chatbot Manager with Google Gemini - NO ACCESS TO APPOINTMENT CHAT"""
+    """AI Chatbot Manager with GROQ - real conversation about health. NO ACCESS TO APPOINTMENT CHAT."""
+    
+    GROQ_MODEL = "llama-3.1-8b-instant"
     
     def __init__(self):
         self.active_sessions: Dict[str, WebSocket] = {}
-        self.session_states: Dict[str, str] = {}  # Track state: IDLE or BOOKED
-        self.conversation_history: Dict[str, List] = {}  # Track conversation per session
+        self.session_states: Dict[str, str] = {}
+        self.conversation_history: Dict[str, List] = {}
         
-        # Configure Gemini API
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        print(f"[DEBUG] API Key loaded: {bool(api_key)} (length: {len(api_key) if api_key else 0})")
-        
-        if api_key and api_key != "your_api_key_here":
+        api_key = (os.getenv("GROQ_API_KEY") or "").strip()
+        if api_key:
             try:
-                genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel('gemini-pro')
-                self.use_gemini = True
-                print("[SUCCESS] Gemini AI configured and ready to use!")
+                self.client = Groq(api_key=api_key)
+                self.use_groq = True
+                print(f"[SUCCESS] GROQ AI configured (key length {len(api_key)}) – chatbot will have real conversations.")
             except Exception as e:
-                print(f"[ERROR] Gemini configuration failed: {e}")
-                self.model = None
-                self.use_gemini = False
-                print("[WARNING] Falling back to rule-based responses.")
+                print(f"[ERROR] GROQ init failed: {e}")
+                self.client = None
+                self.use_groq = False
         else:
-            self.model = None
-            self.use_gemini = False
-            print("[WARNING] GEMINI_API_KEY not found or placeholder value. Using fallback responses.")
-    
-    async def connect(self, session_id: str, websocket: WebSocket):
-        # WebSocket is already accepted in the handler
-        self.active_sessions[session_id] = websocket
-        self.session_states[session_id] = "IDLE"
-        self.conversation_history[session_id] = []
+            self.client = None
+            self.use_groq = False
+            print("[WARNING] GROQ_API_KEY not found. Check backend/.env exists and contains GROQ_API_KEY=your_key (no quotes).")
     
     def disconnect(self, session_id: str):
-        if session_id in self.active_sessions:
-            del self.active_sessions[session_id]
-        if session_id in self.session_states:
-            del self.session_states[session_id]
-        if session_id in self.conversation_history:
-            del self.conversation_history[session_id]
+        for d in (self.active_sessions, self.session_states, self.conversation_history):
+            if session_id in d:
+                del d[session_id]
     
     def detect_appointment_request(self, message: str) -> bool:
-        """Detect if user wants to book an appointment with explicit keywords"""
         keywords = [
-            "book appointment",
-            "schedule appointment",
-            "need a therapist",
-            "see a therapist",
-            "talk to therapist",
-            "book session",
-            "schedule session",
-            "need therapist",
-            "want therapist",
-            "talk to someone",
-            "need someone to talk",
-            "book a session",
-            "make appointment"
+            "book appointment", "schedule appointment", "need a therapist", "see a therapist",
+            "talk to therapist", "book session", "schedule session", "need therapist",
+            "want therapist", "talk to someone", "need someone to talk", "book a session",
+            "make appointment", "i need a therapist", "want to see a therapist"
         ]
-        message_lower = message.lower()
-        return any(keyword in message_lower for keyword in keywords)
+        lower = message.lower().strip()
+        return any(k in lower for k in keywords)
     
     def create_appointment_from_ai(self, user_name: str, db: Session) -> str:
-        """AI creates appointment - internal function only"""
         appointment = Appointment(
             id=str(uuid.uuid4()),
             user_name=user_name,
@@ -602,97 +597,52 @@ class AIChat:
         db.add(appointment)
         db.commit()
         db.refresh(appointment)
-        
-        # Send notifications
-        create_notification(
-            db, "user", user_name,
-            "Appointment Created",
-            f"Your appointment has been created by AI assistant. A therapist will join soon."
-        )
-        create_notification(
-            db, "therapist", "All Therapists",
-            "New AI Appointment",
-            f"AI created appointment for {user_name}"
-        )
-        
+        create_notification(db, "user", user_name, "Appointment Created",
+            "Your appointment has been created. A therapist will join soon.")
+        create_notification(db, "therapist", "All Therapists", "New AI Appointment",
+            f"AI created appointment for {user_name}")
         return appointment.id
     
     def generate_ai_response(self, user_message: str, session_id: str, user_name: str) -> str:
-        """Generate AI response using Google Gemini or fallback"""
-        
-        print(f"[AI RESPONSE] use_gemini={self.use_gemini}, model_exists={bool(self.model)}")
-        
-        if self.use_gemini and self.model:
+        """Generate response via GROQ (real conversation) or minimal fallback."""
+        if self.use_groq and self.client:
             try:
-                # Build conversation context
-                system_context = f"""You are a compassionate mental health support AI assistant named NeuroSupport.
-
-Your role:
-- Provide empathetic mental health support
-- Listen actively and respond with care
-- Offer general mental health advice and coping strategies
-- Help users feel heard and supported
-
-Important capabilities:
-- You can help users book appointments with licensed therapists
-- If a user expresses need for professional help, suggest booking an appointment
-- You are NOT a replacement for professional therapy
-
-User's name: {user_name}
-
-Guidelines:
-- Be warm, empathetic, and supportive
-- Keep responses concise (2-4 sentences)
-- If user seems in crisis, strongly encourage booking an appointment
-- Never claim to be a licensed therapist
-- Focus on emotional support and general wellness advice
-"""
-                
-                # Get conversation history for this session
+                system_content = HEALTH_CHATBOT_SYSTEM + f"\n\nThe person you're talking to is called {user_name}. Use their name occasionally."
                 history = self.conversation_history.get(session_id, [])
+                messages: List[dict] = [{"role": "system", "content": system_content}]
+                for msg in history[-10:]:
+                    role = "user" if msg["role"] == "User" else "assistant"
+                    messages.append({"role": role, "content": msg["content"]})
+                messages.append({"role": "user", "content": user_message})
                 
-                # Build the prompt with history
-                if len(history) > 0:
-                    conversation = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history[-6:]])  # Last 3 exchanges
-                    prompt = f"{system_context}\n\nConversation history:\n{conversation}\n\nUser: {user_message}\n\nAssistant:"
-                else:
-                    prompt = f"{system_context}\n\nUser: {user_message}\n\nAssistant:"
+                completion = self.client.chat.completions.create(
+                    messages=messages,
+                    model=self.GROQ_MODEL,
+                    max_tokens=512,
+                    temperature=0.7,
+                )
+                ai_text = (completion.choices[0].message.content or "").strip()
+                if not ai_text:
+                    ai_text = "I'm here for you. Could you tell me a bit more about what's on your mind?"
                 
-                # Generate response
-                response = self.model.generate_content(prompt)
-                ai_message = response.text.strip()
-                
-                # Update conversation history
                 history.append({"role": "User", "content": user_message})
-                history.append({"role": "Assistant", "content": ai_message})
+                history.append({"role": "Assistant", "content": ai_text})
                 self.conversation_history[session_id] = history
-                
-                return ai_message
-                
+                return ai_text
             except Exception as e:
-                print(f"[ERROR] Gemini API call failed: {e}")
-                print(f"[INFO] User message was: {user_message[:50]}...")
-                # Fallback to rule-based
-                return self._fallback_response(user_message)
-        else:
-            return self._fallback_response(user_message)
-    
-    def _fallback_response(self, user_message: str) -> str:
-        """Fallback rule-based responses when Gemini is unavailable"""
-        message_lower = user_message.lower()
-        
-        if "hello" in message_lower or "hi" in message_lower:
-            return "Hello! I'm here to help you with mental health support. How can I assist you today?"
-        elif "how are you" in message_lower:
-            return "I'm doing well, thank you for asking! How are you feeling today?"
-        elif "sad" in message_lower or "depressed" in message_lower:
-            return "I'm sorry to hear you're feeling this way. Would you like to book an appointment with one of our therapists?"
-        elif "anxious" in message_lower or "anxiety" in message_lower:
-            return "Anxiety can be challenging. Our therapists can help you develop coping strategies. Would you like to schedule a session?"
-        elif "help" in message_lower:
-            return "I can help you book an appointment with a therapist, answer general questions about mental health, or just listen. What would you like to do?"
-        else:
-            return "I understand. If you'd like to speak with a professional therapist, just let me know and I can book an appointment for you."
+                import traceback
+                print(f"[ERROR] GROQ API failed: {e}")
+                traceback.print_exc()
+                return (
+                    "Sorry, I couldn't reach the AI just now. Please try again in a moment. "
+                    "If it keeps happening, check your GROQ API key at https://console.groq.com and the backend terminal for the exact error."
+                )
+        # Key not loaded or client not created
+        return (
+            "I'd love to chat with you properly. Add GROQ_API_KEY to backend/.env (see GROQ_SETUP.md) and restart the backend. "
+            "Until then, you can say 'book appointment' or 'I need a therapist' and I'll schedule one for you."
+        )
+
 
 ai_chat_manager = AIChat()
 
