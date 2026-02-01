@@ -134,6 +134,21 @@ export default function HomePage() {
               </Link>
             </div>
           )}
+
+          {/* Card 4: Analytics Dashboard - User only */}
+          {authenticated && userRole === 'user' ? (
+            <Link href="/dashboard">
+              <div className="bg-white rounded-2xl shadow-lg p-8 hover:shadow-2xl transition-all duration-300 hover:-translate-y-2 cursor-pointer border-2 border-transparent hover:border-amber-500">
+                <div className="text-5xl mb-6 text-center">📊</div>
+                <h2 className="text-2xl font-bold mb-4 text-gray-800 text-center">
+                  Analytics Dashboard
+                </h2>
+                <p className="text-gray-600 text-center">
+                  Session stats, emotion trends, and therapist interaction
+                </p>
+              </div>
+            </Link>
+          ) : null}
         </div>
 
         {/* Therapist Portal Link */}

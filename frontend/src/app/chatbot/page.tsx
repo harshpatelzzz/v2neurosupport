@@ -3,6 +3,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { getAuthHeaders, isAuthenticated, isUser } from '../lib/auth'
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 interface AIMessage {
   type: 'ai_message' | 'user_message'
@@ -23,6 +26,8 @@ export default function ChatbotPage() {
   const [inputValue, setInputValue] = useState('')
   const [userName, setUserName] = useState('')
   const [nameSubmitted, setNameSubmitted] = useState(false)
+  const [authChecked, setAuthChecked] = useState(false)
+  const [loadingProfile, setLoadingProfile] = useState(false)
   const [ws, setWs] = useState<WebSocket | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -36,6 +41,27 @@ export default function ChatbotPage() {
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
+
+  // When logged in, use account full_name so AI-created appointments show in My Appointments
+  useEffect(() => {
+    if (authChecked) return
+    setAuthChecked(true)
+    if (!isAuthenticated() || !isUser()) return
+    setLoadingProfile(true)
+    fetch(`${API_BASE}/auth/me`, { headers: getAuthHeaders() })
+      .then((res) => {
+        if (!res.ok) return
+        return res.json()
+      })
+      .then((data) => {
+        if (data?.full_name?.trim()) {
+          setUserName(data.full_name.trim())
+          setNameSubmitted(true)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingProfile(false))
+  }, [authChecked])
 
   useEffect(() => {
     scrollToBottom()
@@ -127,6 +153,13 @@ export default function ChatbotPage() {
   }
 
   if (!nameSubmitted) {
+    if (loadingProfile) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-indigo-50 to-purple-50">
+          <div className="text-center text-gray-600">Loading…</div>
+        </div>
+      )
+    }
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-indigo-50 to-purple-50">
         <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
@@ -134,6 +167,11 @@ export default function ChatbotPage() {
             <div className="text-6xl mb-4">🤖</div>
             <h1 className="text-3xl font-bold text-gray-800 mb-2">AI Health Assistant</h1>
             <p className="text-gray-600">Chat about your wellbeing and get guidance. Start with your name.</p>
+            {!isAuthenticated() && (
+              <p className="mt-2 text-sm text-amber-700 bg-amber-50 rounded-lg p-2">
+                Log in first so any appointment you book here will appear in My Appointments.
+              </p>
+            )}
           </div>
           <form onSubmit={handleNameSubmit}>
             <input

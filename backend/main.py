@@ -14,7 +14,8 @@ load_dotenv(os.path.join(_backend_dir, ".env"))
 load_dotenv()  # also allow project root .env
 
 from database import engine, get_db, Base
-from models import Appointment, Message, Notification, SessionNote, User, Therapist
+from models import Appointment, Message, EmotionAnalysis, Notification, SessionNote, User, Therapist
+from services.emotion_analysis import analyze as analyze_emotion
 from schemas import (
     AppointmentCreate, AppointmentResponse, MessageResponse,
     NotificationCreate, NotificationResponse,
@@ -34,10 +35,15 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="NeuroSupport-V2 Backend")
 
-# CORS
+# CORS – allow common dev ports so register/login work from any frontend port
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "http://127.0.0.1:3001"],
+    allow_origins=[
+        "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+        "http://localhost:3003", "http://localhost:3004", "http://localhost:3005",
+        "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+        "http://127.0.0.1:3003", "http://127.0.0.1:3004", "http://127.0.0.1:3005",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -526,6 +532,216 @@ def get_analytics(
     }
 
 # ====================================================
+# DASHBOARD ENDPOINTS (USER ONLY - scoped to current user)
+# ====================================================
+
+def _user_appointments(db: Session, user_name: str):
+    """Appointments for the given user (by full_name)."""
+    return db.query(Appointment).filter(Appointment.user_name == user_name)
+
+
+@app.get("/dashboard/user/summary")
+def get_dashboard_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """User dashboard overview: sessions, therapists, appointments, high-risk count, monthly growth, risk distribution."""
+    from collections import defaultdict
+    from datetime import timedelta
+    from sqlalchemy import func
+
+    appointments = _user_appointments(db, current_user.full_name).all()
+    appointment_ids = [a.id for a in appointments]
+    if not appointment_ids:
+        return {
+            "total_sessions": 0,
+            "unique_therapists": 0,
+            "appointments_attended": 0,
+            "high_risk_message_count": 0,
+            "monthly_session_growth": [],
+            "risk_level_distribution": [{"name": "low", "value": 0}, {"name": "medium", "value": 0}, {"name": "high", "value": 0}],
+        }
+
+    # High-risk message count (emotion_analysis.risk_level = 'high')
+    high_risk = db.query(EmotionAnalysis).join(Message).filter(
+        Message.appointment_id.in_(appointment_ids),
+        EmotionAnalysis.risk_level == "high",
+    ).count()
+
+    # Risk level distribution (from user messages only: sender='user')
+    risk_counts = db.query(EmotionAnalysis.risk_level, func.count(EmotionAnalysis.analysis_id)).join(
+        Message
+    ).filter(Message.appointment_id.in_(appointment_ids), Message.sender == "user").group_by(
+        EmotionAnalysis.risk_level
+    ).all()
+    risk_dist = {"low": 0, "medium": 0, "high": 0}
+    for level, cnt in risk_counts:
+        risk_dist[level or "low"] = cnt
+    risk_level_distribution = [{"name": k, "value": risk_dist[k]} for k in ("low", "medium", "high")]
+
+    # Monthly session growth (sessions = appointments with at least one message, or all appointments)
+    monthly = defaultdict(int)
+    for a in appointments:
+        key = a.created_at.strftime("%Y-%m") if a.created_at else ""
+        if key:
+            monthly[key] += 1
+    monthly_session_growth = [{"month": k, "sessions": v} for k, v in sorted(monthly.items())]
+
+    therapists = set(a.therapist_name for a in appointments if a.therapist_name)
+
+    return {
+        "total_sessions": len(appointments),
+        "unique_therapists": len(therapists),
+        "appointments_attended": len([a for a in appointments if a.status == "completed"]),
+        "high_risk_message_count": high_risk,
+        "monthly_session_growth": monthly_session_growth,
+        "risk_level_distribution": risk_level_distribution,
+    }
+
+
+@app.get("/dashboard/user/emotions")
+def get_dashboard_emotions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Emotion distribution, avg risk over time, emotion frequency per month."""
+    from collections import defaultdict
+    from sqlalchemy import func
+
+    appointments = _user_appointments(db, current_user.full_name).all()
+    appointment_ids = [a.id for a in appointments]
+    if not appointment_ids:
+        return {
+            "emotion_distribution": [],
+            "avg_risk_over_time": [],
+            "emotion_frequency_per_month": [],
+        }
+
+    # Emotion distribution (user messages only)
+    emotion_counts = db.query(EmotionAnalysis.emotion_label, func.count(EmotionAnalysis.analysis_id)).join(
+        Message
+    ).filter(Message.appointment_id.in_(appointment_ids), Message.sender == "user").group_by(
+        EmotionAnalysis.emotion_label
+    ).all()
+    emotion_distribution = [{"name": label, "value": count} for label, count in emotion_counts]
+
+    # Avg risk score over time (by month)
+    month_expr = func.strftime("%Y-%m", Message.timestamp)
+    rows = db.query(
+        month_expr.label("month"),
+        func.avg(EmotionAnalysis.risk_score).label("avg_risk"),
+    ).join(EmotionAnalysis).filter(
+        Message.appointment_id.in_(appointment_ids),
+        Message.sender == "user",
+    ).group_by(month_expr).all()
+    avg_risk_over_time = [{"month": r.month or "", "avgRiskScore": round(float(r.avg_risk or 0), 3)} for r in rows]
+
+    # Emotion frequency per month
+    month_expr2 = func.strftime("%Y-%m", Message.timestamp)
+    rows2 = db.query(
+        month_expr2.label("month"),
+        EmotionAnalysis.emotion_label,
+        func.count(EmotionAnalysis.analysis_id).label("count"),
+    ).join(EmotionAnalysis).filter(
+        Message.appointment_id.in_(appointment_ids),
+        Message.sender == "user",
+    ).group_by(month_expr2, EmotionAnalysis.emotion_label).all()
+    by_month = defaultdict(lambda: defaultdict(int))
+    for r in rows2:
+        by_month[r.month or ""][r.emotion_label] = r.count
+    emotion_frequency_per_month = []
+    for month in sorted(by_month.keys()):
+        for label, count in by_month[month].items():
+            emotion_frequency_per_month.append({"month": month, "emotion": label, "count": count})
+
+    return {
+        "emotion_distribution": emotion_distribution,
+        "avg_risk_over_time": avg_risk_over_time,
+        "emotion_frequency_per_month": emotion_frequency_per_month,
+    }
+
+
+@app.get("/dashboard/user/sessions")
+def get_dashboard_sessions(
+    status: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Sessions (appointments) for the user with optional filters."""
+    from datetime import datetime as dt
+
+    q = _user_appointments(db, current_user.full_name).order_by(Appointment.created_at.desc())
+    if status:
+        q = q.filter(Appointment.status == status)
+    if date_from:
+        try:
+            q = q.filter(Appointment.created_at >= dt.fromisoformat(date_from.replace("Z", "+00:00")))
+        except Exception:
+            pass
+    if date_to:
+        try:
+            q = q.filter(Appointment.created_at <= dt.fromisoformat(date_to.replace("Z", "+00:00")))
+        except Exception:
+            pass
+    appointments = q.all()
+    return [
+        {
+            "session_id": a.id,
+            "status": a.status,
+            "started_at": a.created_at.isoformat() if a.created_at else None,
+            "end_date": None,  # could derive from last message or session_notes
+            "therapist_assigned": a.therapist_name,
+        }
+        for a in appointments
+    ]
+
+
+@app.get("/dashboard/user/therapists")
+def get_dashboard_therapists(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Unique therapists, sessions per therapist, appointments per therapist, last interaction."""
+    from sqlalchemy import func
+
+    appointments = _user_appointments(db, current_user.full_name).all()
+    if not appointments:
+        return {
+            "unique_therapist_count": 0,
+            "sessions_per_therapist": [],
+            "appointments_per_therapist": [],
+            "last_interaction_per_therapist": [],
+        }
+
+    therapist_sessions = {}
+    therapist_appointments = {}
+    therapist_last = {}
+    for a in appointments:
+        name = a.therapist_name or "Unassigned"
+        therapist_sessions[name] = therapist_sessions.get(name, 0) + 1
+        therapist_appointments[name] = therapist_appointments.get(name, 0) + 1
+        if a.created_at:
+            if name not in therapist_last or (a.created_at and therapist_last[name] < a.created_at):
+                therapist_last[name] = a.created_at
+
+    sessions_per_therapist = [{"name": n, "sessions": c} for n, c in therapist_sessions.items()]
+    appointments_per_therapist = [{"name": n, "appointments": c} for n, c in therapist_appointments.items()]
+    last_interaction_per_therapist = [
+        {"name": n, "last_interaction": d.isoformat() if d else None}
+        for n, d in therapist_last.items()
+    ]
+
+    return {
+        "unique_therapist_count": len(therapist_sessions),
+        "sessions_per_therapist": sessions_per_therapist,
+        "appointments_per_therapist": appointments_per_therapist,
+        "last_interaction_per_therapist": last_interaction_per_therapist,
+    }
+
+
+# ====================================================
 # AI CHATBOT WEBSOCKET (COMPLETELY ISOLATED)
 # ====================================================
 
@@ -885,7 +1101,7 @@ async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, 
                 })
                 continue
             
-            # Save message to database
+            # Save message + emotion_analysis in one transaction (mandatory)
             message = Message(
                 id=str(uuid.uuid4()),
                 appointment_id=appointment_id,
@@ -894,8 +1110,39 @@ async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, 
                 timestamp=datetime.utcnow()
             )
             db.add(message)
-            db.commit()
-            
+            db.flush()  # get message.id before commit
+
+            try:
+                emotion_label, confidence_score, risk_level, risk_score, model_version = analyze_emotion(content)
+            except (ValueError, Exception) as e:
+                db.rollback()
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Message could not be processed. Please try again."
+                })
+                continue
+
+            emotion = EmotionAnalysis(
+                analysis_id=str(uuid.uuid4()),
+                message_id=message.id,
+                emotion_label=emotion_label,
+                confidence_score=confidence_score,
+                risk_level=risk_level,
+                risk_score=risk_score,
+                model_version=model_version,
+                analyzed_at=datetime.utcnow(),
+            )
+            db.add(emotion)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Message could not be saved. Please try again."
+                })
+                continue
+
             # Broadcast to the other party
             message_data = {
                 "type": "message",
@@ -903,10 +1150,9 @@ async def appointment_chat_websocket(websocket: WebSocket, appointment_id: str, 
                 "content": content,
                 "timestamp": message.timestamp.isoformat()
             }
-            
             await appointment_chat_manager.broadcast_to_appointment(
-                appointment_id, 
-                message_data, 
+                appointment_id,
+                message_data,
                 role
             )
     

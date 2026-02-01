@@ -11,7 +11,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { isAuthenticated, isTherapist, getAuthHeaders } from '../../../lib/auth'
+import { isAuthenticated, isTherapist, getAuthHeaders, getAuthToken } from '../../../lib/auth'
 
 interface HumanMessage {
   type: 'message' | 'system'
@@ -194,9 +194,20 @@ export default function TherapistAppointmentChatPage() {
       return
     }
 
+    if (!isTherapist()) {
+      alert('You must be logged in as a therapist to end the session. Please log out and log in with your therapist account.')
+      router.push('/login')
+      return
+    }
+
     setIsEndingSession(true)
     try {
-      // Call REST API to end session
+      if (!getAuthToken()) {
+        alert('Session expired. Please log in again as a therapist.')
+        router.push('/login')
+        return
+      }
+
       const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/end-session`, {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -207,14 +218,18 @@ export default function TherapistAppointmentChatPage() {
         return
       }
 
+      if (response.status === 403) {
+        const errorData = await response.json().catch(() => ({}))
+        const msg = errorData.detail || 'Not authorized as therapist.'
+        alert(`${msg} Please log out and log in with your therapist account.`)
+        router.push('/login')
+        return
+      }
+
       if (response.ok) {
-        // Send WebSocket event to broadcast to both parties
         if (ws) {
-          ws.send(JSON.stringify({
-            type: 'END_SESSION'
-          }))
+          ws.send(JSON.stringify({ type: 'END_SESSION' }))
         }
-        
         setSessionEnded(true)
       } else {
         const errorData = await response.json()
