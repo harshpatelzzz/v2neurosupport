@@ -65,10 +65,11 @@ export default function ChatbotPage() {
 
     websocket.onerror = (error) => {
       console.error('WebSocket error:', error)
+      console.error('WebSocket URL:', `ws://localhost:8000/ws/ai-chat/${sessionId}`)
     }
 
-    websocket.onclose = () => {
-      console.log('Disconnected from AI chatbot')
+    websocket.onclose = (event) => {
+      console.log('Disconnected from AI chatbot', event.code, event.reason)
     }
 
     setWs(websocket)

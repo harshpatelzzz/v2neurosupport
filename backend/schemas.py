@@ -47,7 +47,6 @@ class NotificationResponse(BaseModel):
         from_attributes = True
 
 class SessionNoteCreate(BaseModel):
-    therapist_name: str
     notes: str
 
 class SessionNoteUpdate(BaseModel):
@@ -63,3 +62,66 @@ class SessionNoteResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+# Authentication Schemas
+class UserRegister(BaseModel):
+    username: str
+    email: str
+    password: str
+    full_name: str
+
+class TherapistRegister(BaseModel):
+    username: str
+    email: str
+    password: str
+    full_name: str
+    license_number: Optional[str] = None
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class TherapistLogin(BaseModel):
+    username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    role: str  # "user" | "therapist"
+    user_id: str
+    username: str
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    email: str
+    full_name: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class TherapistResponse(BaseModel):
+    id: str
+    username: str
+    email: str
+    full_name: str
+    license_number: Optional[str]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# Analytics Schemas
+class AnalyticsResponse(BaseModel):
+    total_appointments: int
+    scheduled_appointments: int
+    active_appointments: int
+    completed_appointments: int
+    ai_referred_appointments: int
+    manual_appointments: int
+    total_patients: int
+    total_session_notes: int
+    appointments_by_day: List[dict]
+    recent_appointments: List[AppointmentResponse]

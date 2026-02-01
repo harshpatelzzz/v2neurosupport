@@ -12,13 +12,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from database import engine, get_db, Base
-from models import Appointment, Message, Notification, SessionNote
+from models import Appointment, Message, Notification, SessionNote, User, Therapist
 from schemas import (
     AppointmentCreate, AppointmentResponse, MessageResponse,
     NotificationCreate, NotificationResponse,
-    SessionNoteCreate, SessionNoteUpdate, SessionNoteResponse
+    SessionNoteCreate, SessionNoteUpdate, SessionNoteResponse,
+    UserRegister, TherapistRegister, UserLogin, TherapistLogin,
+    Token, UserResponse, TherapistResponse, AnalyticsResponse
 )
 import uuid
+from auth import (
+    verify_password, get_password_hash, create_access_token,
+    get_current_user, get_current_therapist
+)
+from datetime import timedelta
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -28,7 +35,7 @@ app = FastAPI(title="NeuroSupport-V2 Backend")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "http://127.0.0.1:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,15 +67,143 @@ async def startup_event():
         print("=" * 60)
 
 # ====================================================
+# AUTHENTICATION ENDPOINTS
+# ====================================================
+
+@app.post("/auth/user/register", response_model=UserResponse)
+def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
+    """Register a new user"""
+    # Check if username already exists
+    if db.query(User).filter(User.username == user_data.username).first():
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    # Check if email already exists
+    if db.query(User).filter(User.email == user_data.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    db_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        password_hash=hashed_password,
+        full_name=user_data.full_name
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    return db_user
+
+@app.post("/auth/user/login", response_model=Token)
+def login_user(credentials: UserLogin, db: Session = Depends(get_db)):
+    """Login as user"""
+    user = db.query(User).filter(User.username == credentials.username).first()
+    
+    if not user or not verify_password(credentials.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=60 * 24 * 7)  # 7 days
+    access_token = create_access_token(
+        data={"sub": user.username, "role": "user", "user_id": user.id},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": "user",
+        "user_id": user.id,
+        "username": user.username
+    }
+
+@app.post("/auth/therapist/register", response_model=TherapistResponse)
+def register_therapist(therapist_data: TherapistRegister, db: Session = Depends(get_db)):
+    """Register a new therapist"""
+    # Check if username already exists
+    if db.query(Therapist).filter(Therapist.username == therapist_data.username).first():
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    # Check if email already exists
+    if db.query(Therapist).filter(Therapist.email == therapist_data.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create new therapist
+    hashed_password = get_password_hash(therapist_data.password)
+    db_therapist = Therapist(
+        username=therapist_data.username,
+        email=therapist_data.email,
+        password_hash=hashed_password,
+        full_name=therapist_data.full_name,
+        license_number=therapist_data.license_number
+    )
+    db.add(db_therapist)
+    db.commit()
+    db.refresh(db_therapist)
+    
+    return db_therapist
+
+@app.post("/auth/therapist/login", response_model=Token)
+def login_therapist(credentials: TherapistLogin, db: Session = Depends(get_db)):
+    """Login as therapist"""
+    therapist = db.query(Therapist).filter(Therapist.username == credentials.username).first()
+    
+    if not therapist or not verify_password(credentials.password, therapist.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=60 * 24 * 7)  # 7 days
+    access_token = create_access_token(
+        data={"sub": therapist.username, "role": "therapist", "user_id": therapist.id},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": "therapist",
+        "user_id": therapist.id,
+        "username": therapist.username
+    }
+
+@app.get("/auth/me", response_model=dict)
+def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information"""
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "full_name": current_user.full_name,
+        "role": "user"
+    }
+
+@app.get("/auth/therapist/me", response_model=dict)
+def get_current_therapist_info(current_therapist: Therapist = Depends(get_current_therapist)):
+    """Get current therapist information"""
+    return {
+        "id": current_therapist.id,
+        "username": current_therapist.username,
+        "email": current_therapist.email,
+        "full_name": current_therapist.full_name,
+        "license_number": current_therapist.license_number,
+        "role": "therapist"
+    }
+
+# ====================================================
 # REST API ENDPOINTS
 # ====================================================
 
 @app.post("/appointments", response_model=AppointmentResponse)
-def create_appointment(appointment: AppointmentCreate, db: Session = Depends(get_db)):
-    """Create a new appointment manually"""
+def create_appointment(
+    appointment: AppointmentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new appointment manually (requires user authentication)"""
     db_appointment = Appointment(
         id=str(uuid.uuid4()),
-        user_name=appointment.user_name,
+        user_name=current_user.full_name,  # Use authenticated user's name
         therapist_name=appointment.therapist_name,
         status="scheduled",
         created_from=appointment.created_from
@@ -79,30 +214,54 @@ def create_appointment(appointment: AppointmentCreate, db: Session = Depends(get
     
     # Send notifications
     create_notification(
-        db, "user", appointment.user_name,
+        db, "user", current_user.full_name,
         "Appointment Scheduled",
         f"Your appointment has been scheduled successfully. ID: {db_appointment.id[:8]}"
     )
     create_notification(
         db, "therapist", "All Therapists",
         "New Appointment",
-        f"New appointment from {appointment.user_name}"
+        f"New appointment from {current_user.full_name}"
     )
     
     return db_appointment
 
 @app.get("/appointments", response_model=List[AppointmentResponse])
-def get_appointments(db: Session = Depends(get_db)):
-    """Get all appointments"""
+def get_appointments(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all appointments for the current user"""
+    # Filter appointments by user's name
+    appointments = db.query(Appointment).filter(
+        Appointment.user_name == current_user.full_name
+    ).order_by(Appointment.created_at.desc()).all()
+    return appointments
+
+@app.get("/appointments/all", response_model=List[AppointmentResponse])
+def get_all_appointments(
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
+    """Get all appointments (THERAPIST ONLY)"""
     appointments = db.query(Appointment).order_by(Appointment.created_at.desc()).all()
     return appointments
 
 @app.get("/appointments/{appointment_id}", response_model=AppointmentResponse)
-def get_appointment(appointment_id: str, db: Session = Depends(get_db)):
-    """Get appointment details"""
+def get_appointment(
+    appointment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get appointment details (user can only see their own appointments)"""
     appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
     if not appointment:
         raise HTTPException(status_code=404, detail="Appointment not found")
+    
+    # Verify user owns this appointment
+    if appointment.user_name != current_user.full_name:
+        raise HTTPException(status_code=403, detail="Not authorized to view this appointment")
+    
     return appointment
 
 @app.get("/appointments/{appointment_id}/messages", response_model=List[MessageResponse])
@@ -112,7 +271,11 @@ def get_appointment_messages(appointment_id: str, db: Session = Depends(get_db))
     return messages
 
 @app.post("/appointments/{appointment_id}/end-session")
-def end_appointment_session(appointment_id: str, db: Session = Depends(get_db)):
+def end_appointment_session(
+    appointment_id: str,
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
     """End an appointment session (THERAPIST ONLY)"""
     # Get appointment
     appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
@@ -156,23 +319,61 @@ def create_notification(db: Session, role: str, recipient: str, title: str, mess
 
 @app.get("/notifications", response_model=List[NotificationResponse])
 def get_notifications(
-    role: str = Query(..., description="Role: user or therapist"),
-    name: str = Query(..., description="Recipient name"),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get notifications for a specific user or therapist"""
+    """Get notifications for the current user"""
     notifications = db.query(Notification).filter(
-        Notification.recipient_role == role,
-        Notification.recipient_name == name
+        Notification.recipient_role == "user",
+        Notification.recipient_name == current_user.full_name
+    ).order_by(Notification.created_at.desc()).all()
+    return notifications
+
+@app.get("/notifications/therapist", response_model=List[NotificationResponse])
+def get_therapist_notifications(
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
+    """Get notifications for the current therapist"""
+    notifications = db.query(Notification).filter(
+        Notification.recipient_role == "therapist",
+        Notification.recipient_name == "All Therapists"
     ).order_by(Notification.created_at.desc()).all()
     return notifications
 
 @app.post("/notifications/{notification_id}/read")
-def mark_notification_read(notification_id: str, db: Session = Depends(get_db)):
-    """Mark a notification as read"""
+def mark_notification_read(
+    notification_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Mark a notification as read (user only)"""
     notification = db.query(Notification).filter(Notification.id == notification_id).first()
     if not notification:
         raise HTTPException(status_code=404, detail="Notification not found")
+    
+    # Verify user owns this notification
+    if notification.recipient_name != current_user.full_name:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    notification.is_read = True
+    db.commit()
+    return {"status": "success", "message": "Notification marked as read"}
+
+@app.post("/notifications/{notification_id}/read/therapist")
+def mark_therapist_notification_read(
+    notification_id: str,
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
+    """Mark a notification as read (therapist only)"""
+    notification = db.query(Notification).filter(Notification.id == notification_id).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    
+    # Verify therapist notification
+    if notification.recipient_role != "therapist":
+        raise HTTPException(status_code=403, detail="Not authorized")
     
     notification.is_read = True
     db.commit()
@@ -186,6 +387,7 @@ def mark_notification_read(notification_id: str, db: Session = Depends(get_db)):
 def create_session_note(
     appointment_id: str,
     note: SessionNoteCreate,
+    current_therapist: Therapist = Depends(get_current_therapist),
     db: Session = Depends(get_db)
 ):
     """Create or update session notes for an appointment (THERAPIST ONLY)"""
@@ -202,7 +404,7 @@ def create_session_note(
     if existing_note:
         # Update existing note
         existing_note.notes = note.notes
-        existing_note.therapist_name = note.therapist_name
+        existing_note.therapist_name = current_therapist.full_name
         existing_note.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(existing_note)
@@ -212,7 +414,7 @@ def create_session_note(
         session_note = SessionNote(
             id=str(uuid.uuid4()),
             appointment_id=appointment_id,
-            therapist_name=note.therapist_name,
+            therapist_name=current_therapist.full_name,
             notes=note.notes
         )
         db.add(session_note)
@@ -221,7 +423,11 @@ def create_session_note(
         return session_note
 
 @app.get("/appointments/{appointment_id}/notes", response_model=SessionNoteResponse)
-def get_session_note(appointment_id: str, db: Session = Depends(get_db)):
+def get_session_note(
+    appointment_id: str,
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
     """Get session notes for an appointment (THERAPIST ONLY)"""
     session_note = db.query(SessionNote).filter(
         SessionNote.appointment_id == appointment_id
@@ -236,6 +442,7 @@ def get_session_note(appointment_id: str, db: Session = Depends(get_db)):
 def update_session_note(
     appointment_id: str,
     note_update: SessionNoteUpdate,
+    current_therapist: Therapist = Depends(get_current_therapist),
     db: Session = Depends(get_db)
 ):
     """Update session notes for an appointment (THERAPIST ONLY)"""
@@ -251,6 +458,71 @@ def update_session_note(
     db.commit()
     db.refresh(session_note)
     return session_note
+
+# ====================================================
+# ANALYTICS ENDPOINTS (THERAPIST ONLY)
+# ====================================================
+
+@app.get("/analytics", response_model=AnalyticsResponse)
+def get_analytics(
+    current_therapist: Therapist = Depends(get_current_therapist),
+    db: Session = Depends(get_db)
+):
+    """Get comprehensive analytics for therapist"""
+    from collections import defaultdict
+    from datetime import timedelta
+    
+    # Get all appointments
+    all_appointments = db.query(Appointment).all()
+    
+    # Basic counts
+    total_appointments = len(all_appointments)
+    scheduled_appointments = len([a for a in all_appointments if a.status == "scheduled"])
+    active_appointments = len([a for a in all_appointments if a.status == "active"])
+    completed_appointments = len([a for a in all_appointments if a.status == "completed"])
+    
+    # Creation source counts
+    ai_referred_appointments = len([a for a in all_appointments if a.created_from == "ai"])
+    manual_appointments = len([a for a in all_appointments if a.created_from == "manual"])
+    
+    # Unique patients
+    unique_patients = len(set([a.user_name for a in all_appointments]))
+    
+    # Session notes count
+    total_session_notes = db.query(SessionNote).count()
+    
+    # Appointments by day (last 30 days)
+    appointments_by_day = defaultdict(int)
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    
+    for appointment in all_appointments:
+        if appointment.created_at >= thirty_days_ago:
+            day_key = appointment.created_at.strftime("%Y-%m-%d")
+            appointments_by_day[day_key] += 1
+    
+    # Convert to list of dicts
+    appointments_by_day_list = [
+        {"date": date, "count": count}
+        for date, count in sorted(appointments_by_day.items())
+    ]
+    
+    # Recent appointments (last 10)
+    recent_appointments = db.query(Appointment).order_by(
+        Appointment.created_at.desc()
+    ).limit(10).all()
+    
+    return {
+        "total_appointments": total_appointments,
+        "scheduled_appointments": scheduled_appointments,
+        "active_appointments": active_appointments,
+        "completed_appointments": completed_appointments,
+        "ai_referred_appointments": ai_referred_appointments,
+        "manual_appointments": manual_appointments,
+        "total_patients": unique_patients,
+        "total_session_notes": total_session_notes,
+        "appointments_by_day": appointments_by_day_list,
+        "recent_appointments": recent_appointments
+    }
 
 # ====================================================
 # AI CHATBOT WEBSOCKET (COMPLETELY ISOLATED)
@@ -285,10 +557,10 @@ class AIChat:
             print("[WARNING] GEMINI_API_KEY not found or placeholder value. Using fallback responses.")
     
     async def connect(self, session_id: str, websocket: WebSocket):
-        await websocket.accept()
+        # WebSocket is already accepted in the handler
         self.active_sessions[session_id] = websocket
-        self.session_states[session_id] = "IDLE"  # Initialize state
-        self.conversation_history[session_id] = []  # Initialize conversation history
+        self.session_states[session_id] = "IDLE"
+        self.conversation_history[session_id] = []
     
     def disconnect(self, session_id: str):
         if session_id in self.active_sessions:
@@ -431,67 +703,102 @@ async def ai_chatbot_websocket(websocket: WebSocket, session_id: str):
     NO ACCESS TO APPOINTMENT CHAT
     NO THERAPIST COMMUNICATION
     """
-    await ai_chat_manager.connect(session_id, websocket)
-    
-    # Get DB session
-    db = next(get_db())
+    print(f"[WEBSOCKET] Connection attempt for session {session_id}")
+    print(f"[WEBSOCKET] Client: {websocket.client}")
     
     try:
-        # Send welcome message
-        await websocket.send_json({
-            "type": "ai_message",
-            "content": "Hello! I'm your AI mental health support assistant. How can I help you today?",
-            "timestamp": datetime.utcnow().isoformat()
-        })
+        # Accept WebSocket connection first
+        await websocket.accept()
+        print(f"[WEBSOCKET] Connection accepted for session {session_id}")
         
-        while True:
-            data = await websocket.receive_json()
-            user_message = data.get("content", "")
-            user_name = data.get("user_name", "Anonymous")
-            
-            # Get current session state
-            current_state = ai_chat_manager.session_states.get(session_id, "IDLE")
-            
-            # Check if user wants to book appointment AND hasn't already booked
-            if ai_chat_manager.detect_appointment_request(user_message) and current_state == "IDLE":
-                # AI creates appointment internally
-                appointment_id = ai_chat_manager.create_appointment_from_ai(user_name, db)
-                
-                # Update session state to BOOKED
-                ai_chat_manager.session_states[session_id] = "BOOKED"
-                
-                # AI responds with confirmation - APPOINTMENT_BOOKED event
-                await websocket.send_json({
-                    "type": "APPOINTMENT_BOOKED",
-                    "content": f"Perfect! I've scheduled an appointment for you. A therapist will be available soon.",
-                    "appointment_id": appointment_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-                
-                # RETURN immediately - don't continue processing
-                continue
-            
-            # If already booked, don't offer to book again
-            if current_state == "BOOKED":
-                await websocket.send_json({
-                    "type": "ai_message",
-                    "content": "Your appointment has already been scheduled. You can close this chat and go to your appointments to connect with a therapist.",
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-                continue
-            
-            # Normal AI response (only if not booked)
-            ai_response = ai_chat_manager.generate_ai_response(user_message, session_id, user_name)
+        # Now register the session
+        ai_chat_manager.active_sessions[session_id] = websocket
+        ai_chat_manager.session_states[session_id] = "IDLE"
+        ai_chat_manager.conversation_history[session_id] = []
+        print(f"[WEBSOCKET] Session {session_id} registered")
+        
+        # Get DB session
+        db = next(get_db())
+        
+        try:
+            # Send welcome message
             await websocket.send_json({
                 "type": "ai_message",
-                "content": ai_response,
+                "content": "Hello! I'm your AI mental health support assistant. How can I help you today?",
                 "timestamp": datetime.utcnow().isoformat()
             })
-    
-    except WebSocketDisconnect:
-        ai_chat_manager.disconnect(session_id)
-    finally:
-        db.close()
+            print(f"[WEBSOCKET] Welcome message sent to session {session_id}")
+            
+            while True:
+                data = await websocket.receive_json()
+                user_message = data.get("content", "")
+                user_name = data.get("user_name", "Anonymous")
+                
+                print(f"[WEBSOCKET] Received message from {user_name}: {user_message[:50]}...")
+                
+                # Get current session state
+                current_state = ai_chat_manager.session_states.get(session_id, "IDLE")
+                
+                # Check if user wants to book appointment AND hasn't already booked
+                if ai_chat_manager.detect_appointment_request(user_message) and current_state == "IDLE":
+                    print(f"[WEBSOCKET] Booking appointment for {user_name}")
+                    # AI creates appointment internally
+                    appointment_id = ai_chat_manager.create_appointment_from_ai(user_name, db)
+                    
+                    # Update session state to BOOKED
+                    ai_chat_manager.session_states[session_id] = "BOOKED"
+                    
+                    # AI responds with confirmation - APPOINTMENT_BOOKED event
+                    await websocket.send_json({
+                        "type": "APPOINTMENT_BOOKED",
+                        "content": f"Perfect! I've scheduled an appointment for you. A therapist will be available soon.",
+                        "appointment_id": appointment_id,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    print(f"[WEBSOCKET] Appointment created: {appointment_id}")
+                    
+                    # RETURN immediately - don't continue processing
+                    continue
+                
+                # If already booked, don't offer to book again
+                if current_state == "BOOKED":
+                    await websocket.send_json({
+                        "type": "ai_message",
+                        "content": "Your appointment has already been scheduled. You can close this chat and go to your appointments to connect with a therapist.",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    continue
+                
+                # Normal AI response (only if not booked)
+                print(f"[WEBSOCKET] Generating AI response for session {session_id}")
+                ai_response = ai_chat_manager.generate_ai_response(user_message, session_id, user_name)
+                await websocket.send_json({
+                    "type": "ai_message",
+                    "content": ai_response,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                print(f"[WEBSOCKET] AI response sent: {ai_response[:50]}...")
+        
+        except WebSocketDisconnect:
+            print(f"[WEBSOCKET] Client disconnected for session {session_id}")
+            ai_chat_manager.disconnect(session_id)
+        except Exception as e:
+            print(f"[WEBSOCKET ERROR] Error in message loop: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            db.close()
+            ai_chat_manager.disconnect(session_id)
+        
+    except Exception as e:
+        print(f"[WEBSOCKET ERROR] Failed to accept connection: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except:
+            pass
+        return
 
 # ====================================================
 # APPOINTMENT CHAT WEBSOCKET (HUMAN ONLY - COMPLETELY ISOLATED)

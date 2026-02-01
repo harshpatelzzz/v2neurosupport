@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import NotificationBell from '../../components/NotificationBell'
+import { isAuthenticated, isTherapist, getAuthHeaders, getAuthUser } from '../../lib/auth'
 
 interface Appointment {
   id: string
@@ -14,16 +16,31 @@ interface Appointment {
 }
 
 export default function TherapistAppointmentsListPage() {
+  const router = useRouter()
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isTherapist()) {
+      router.push('/login')
+      return
+    }
+
     fetchAppointments()
-  }, [])
+  }, [router])
 
   const fetchAppointments = async () => {
     try {
-      const response = await fetch('http://localhost:8000/appointments')
+      const response = await fetch('http://localhost:8000/appointments/all', {
+        headers: getAuthHeaders(),
+      })
+      
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
+      
       const data = await response.json()
       setAppointments(data)
     } catch (error) {

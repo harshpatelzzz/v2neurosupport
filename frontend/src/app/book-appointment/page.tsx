@@ -1,14 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isAuthenticated, isUser, getAuthHeaders } from '../lib/auth'
 
 export default function BookAppointmentPage() {
-  const [userName, setUserName] = useState('')
   const [preferredTime, setPreferredTime] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const router = useRouter()
+
+  useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isUser()) {
+      router.push('/login')
+    }
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -17,19 +24,22 @@ export default function BookAppointmentPage() {
     try {
       const response = await fetch('http://localhost:8000/appointments', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
-          user_name: userName,
           created_from: 'manual'
         }),
       })
 
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
+
       if (response.ok) {
         router.push('/appointments')
       } else {
-        alert('Failed to book appointment')
+        const errorData = await response.json()
+        alert(errorData.detail || 'Failed to book appointment')
       }
     } catch (error) {
       console.error('Error booking appointment:', error)
@@ -49,18 +59,10 @@ export default function BookAppointmentPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              Your Name *
-            </label>
-            <input
-              type="text"
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              placeholder="Enter your name"
-              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-purple-500"
-              required
-            />
+          <div className="p-4 bg-blue-50 rounded-lg">
+            <p className="text-sm text-blue-800">
+              Your appointment will be created using your registered account information.
+            </p>
           </div>
 
           <div>

@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import NotificationBell from '../components/NotificationBell'
+import { getAuthHeaders, isAuthenticated, isUser, getAuthUser } from '../lib/auth'
 
 interface Appointment {
   id: string
@@ -14,24 +16,39 @@ interface Appointment {
 }
 
 export default function AppointmentsListPage() {
+  const router = useRouter()
   const [appointments, setAppointments] = useState<Appointment[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [userName, setUserName] = useState<string>('')
 
   useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isUser()) {
+      router.push('/login')
+      return
+    }
+
+    const authUser = getAuthUser()
+    if (authUser) {
+      setUserName(authUser.username)
+    }
+
     fetchAppointments()
-  }, [])
+  }, [router])
 
   const fetchAppointments = async () => {
     try {
-      const response = await fetch('http://localhost:8000/appointments')
+      const response = await fetch('http://localhost:8000/appointments', {
+        headers: getAuthHeaders(),
+      })
+      
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
+      
       const data = await response.json()
       setAppointments(data)
-      
-      // Get user name from first appointment
-      if (data.length > 0) {
-        setUserName(data[0].user_name)
-      }
     } catch (error) {
       console.error('Error fetching appointments:', error)
     } finally {

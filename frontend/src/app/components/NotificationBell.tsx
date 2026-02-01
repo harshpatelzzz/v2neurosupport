@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { getAuthHeaders, isUser, isTherapist } from '../lib/auth'
 
 interface Notification {
   id: string
@@ -45,7 +46,14 @@ export default function NotificationBell({ role, name }: NotificationBellProps) 
 
   const fetchNotifications = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/notifications?role=${role}&name=${encodeURIComponent(name)}`)
+      const endpoint = role === 'user'
+        ? 'http://localhost:8000/notifications'
+        : 'http://localhost:8000/notifications/therapist'
+      
+      const response = await fetch(endpoint, {
+        headers: getAuthHeaders(),
+      })
+      
       if (response.ok) {
         const data = await response.json()
         setNotifications(data)
@@ -58,9 +66,15 @@ export default function NotificationBell({ role, name }: NotificationBellProps) 
 
   const markAsRead = async (notificationId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/notifications/${notificationId}/read`, {
-        method: 'POST'
+      const endpoint = role === 'user'
+        ? `http://localhost:8000/notifications/${notificationId}/read`
+        : `http://localhost:8000/notifications/${notificationId}/read/therapist`
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: getAuthHeaders(),
       })
+      
       if (response.ok) {
         fetchNotifications()
       }

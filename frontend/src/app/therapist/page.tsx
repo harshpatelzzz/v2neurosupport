@@ -1,8 +1,20 @@
 'use client'
 
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isAuthenticated, isTherapist } from '../lib/auth'
 
 export default function TherapistDashboardPage() {
+  const router = useRouter()
+
+  useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isTherapist()) {
+      router.push('/login')
+    }
+  }, [router])
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-gradient-to-br from-teal-50 to-cyan-50">
       <div className="max-w-2xl w-full">
@@ -31,6 +43,24 @@ export default function TherapistDashboardPage() {
                   </p>
                 </div>
                 <div className="text-3xl text-teal-500">→</div>
+              </div>
+            </div>
+          </Link>
+
+          {/* Analytics Card */}
+          <Link href="/therapist/analysis">
+            <div className="bg-white rounded-2xl shadow-lg p-8 hover:shadow-2xl transition-all duration-300 hover:-translate-y-2 cursor-pointer border-2 border-transparent hover:border-purple-500">
+              <div className="flex items-center space-x-6">
+                <div className="text-5xl">📊</div>
+                <div className="flex-1">
+                  <h2 className="text-2xl font-bold mb-2 text-gray-800">
+                    Analytics & Insights
+                  </h2>
+                  <p className="text-gray-600">
+                    View comprehensive statistics and trends
+                  </p>
+                </div>
+                <div className="text-3xl text-purple-500">→</div>
               </div>
             </div>
           </Link>

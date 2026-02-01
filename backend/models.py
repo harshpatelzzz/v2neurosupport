@@ -53,3 +53,24 @@ class SessionNote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     appointment = relationship("Appointment", back_populates="session_notes")
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(String, primary_key=True, default=generate_uuid)
+    username = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    full_name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Therapist(Base):
+    __tablename__ = "therapists"
+    
+    id = Column(String, primary_key=True, default=generate_uuid)
+    username = Column(String, unique=True, nullable=False, index=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    full_name = Column(String, nullable=False)
+    license_number = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -9,8 +9,9 @@
  */
 
 import { useState, useEffect, useRef } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isAuthenticated, isTherapist, getAuthHeaders } from '../../../lib/auth'
 
 interface HumanMessage {
   type: 'message' | 'system'
@@ -39,6 +40,7 @@ interface SessionNote {
 
 export default function TherapistAppointmentChatPage() {
   const params = useParams()
+  const router = useRouter()
   const appointmentId = params.id as string
   
   const [messages, setMessages] = useState<HumanMessage[]>([])
@@ -58,6 +60,13 @@ export default function TherapistAppointmentChatPage() {
   const [sessionEnded, setSessionEnded] = useState(false)
   const [isEndingSession, setIsEndingSession] = useState(false)
 
+  useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isTherapist()) {
+      router.push('/login')
+    }
+  }, [router])
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
@@ -68,9 +77,19 @@ export default function TherapistAppointmentChatPage() {
 
   // Fetch appointment details
   useEffect(() => {
+    if (!isAuthenticated()) return
+
     const fetchAppointment = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}`)
+        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}`, {
+          headers: getAuthHeaders(),
+        })
+        
+        if (response.status === 401) {
+          router.push('/login')
+          return
+        }
+        
         const data = await response.json()
         setAppointment(data)
       } catch (error) {
@@ -79,13 +98,17 @@ export default function TherapistAppointmentChatPage() {
     }
 
     fetchAppointment()
-  }, [appointmentId])
+  }, [appointmentId, router])
 
   // Fetch session notes
   useEffect(() => {
+    if (!isAuthenticated()) return
+
     const fetchNotes = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/notes`)
+        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/notes`, {
+          headers: getAuthHeaders(),
+        })
         if (response.ok) {
           const data: SessionNote = await response.json()
           setSessionNotes(data.notes)
@@ -175,8 +198,14 @@ export default function TherapistAppointmentChatPage() {
     try {
       // Call REST API to end session
       const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/end-session`, {
-        method: 'POST'
+        method: 'POST',
+        headers: getAuthHeaders(),
       })
+
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
 
       if (response.ok) {
         // Send WebSocket event to broadcast to both parties
@@ -188,7 +217,8 @@ export default function TherapistAppointmentChatPage() {
         
         setSessionEnded(true)
       } else {
-        alert('Failed to end session')
+        const errorData = await response.json()
+        alert(errorData.detail || 'Failed to end session')
       }
     } catch (error) {
       console.error('Error ending session:', error)
@@ -204,17 +234,22 @@ export default function TherapistAppointmentChatPage() {
     try {
       const response = await fetch(`http://localhost:8000/appointments/${appointmentId}/notes`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
-          therapist_name: therapistName,
           notes: sessionNotes
         })
       })
 
+      if (response.status === 401) {
+        router.push('/login')
+        return
+      }
+
       if (response.ok) {
         setLastSaved(new Date())
+      } else {
+        const errorData = await response.json()
+        console.error('Error saving notes:', errorData)
       }
     } catch (error) {
       console.error('Error saving notes:', error)

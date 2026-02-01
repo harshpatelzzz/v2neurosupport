@@ -11,6 +11,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { isAuthenticated, isUser, getAuthHeaders } from '../../lib/auth'
 
 interface HumanMessage {
   type: 'message' | 'system'
@@ -30,6 +31,7 @@ interface Appointment {
 
 export default function UserAppointmentChatPage() {
   const params = useParams()
+  const router = useRouter()
   const appointmentId = params.id as string
   
   const [messages, setMessages] = useState<HumanMessage[]>([])
@@ -39,6 +41,13 @@ export default function UserAppointmentChatPage() {
   const [isConnected, setIsConnected] = useState(false)
   const [sessionEnded, setSessionEnded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    // Check authentication
+    if (!isAuthenticated() || !isUser()) {
+      router.push('/login')
+    }
+  }, [router])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -50,9 +59,19 @@ export default function UserAppointmentChatPage() {
 
   // Fetch appointment details
   useEffect(() => {
+    if (!isAuthenticated()) return
+
     const fetchAppointment = async () => {
       try {
-        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}`)
+        const response = await fetch(`http://localhost:8000/appointments/${appointmentId}`, {
+          headers: getAuthHeaders(),
+        })
+        
+        if (response.status === 401) {
+          router.push('/login')
+          return
+        }
+        
         const data = await response.json()
         setAppointment(data)
       } catch (error) {
@@ -61,7 +80,7 @@ export default function UserAppointmentChatPage() {
     }
 
     fetchAppointment()
-  }, [appointmentId])
+  }, [appointmentId, router])
 
   // Connect to HUMAN-ONLY WebSocket
   useEffect(() => {
